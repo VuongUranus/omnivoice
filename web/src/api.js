@@ -16,6 +16,7 @@ export const api = {
   createVoice: (form) => req('/api/voices', { method: 'POST', body: form }),
   deleteVoice: (key) => req(`/api/voices?key=${encodeURIComponent(key)}`, { method: 'DELETE' }),
   previewVoice: (form) => req('/api/voices/preview', { method: 'POST', body: form }),
+  inspectAudio: (form) => req('/api/voices/inspect', { method: 'POST', body: form }),
   transcribe: (form) => req('/api/transcribe', { method: 'POST', body: form }),
   generate: (body) => req('/api/generate', json('POST', body)),
   history: () => req('/api/history'),

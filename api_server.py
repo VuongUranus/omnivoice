@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from omnivoice import OmniVoice, OmniVoiceGenerationConfig
+from omnivoice.utils.audio import load_waveform
 from omnivoice.utils.common import get_best_device
 from omnivoice.utils.lang_map import LANG_NAMES, lang_display_name
 
@@ -51,6 +52,26 @@ app.add_middleware(
 )
 
 STATE: dict = {"model": None, "device": "cpu", "voice_cache": {}}
+
+# ----------------------------------------------------------------------------
+# Giới hạn của trang Voice Clone — nguồn duy nhất. Giao diện đọc lại qua /api/meta
+# nên số liệu hiển thị luôn trùng với những gì server thực sự kiểm tra.
+# Mốc 20s và khuyến nghị 3-10s lấy từ OmniVoice.create_voice_clone_prompt():
+# audio mẫu >20s bị model cảnh báo (chậm, tốn RAM, chất lượng giảm).
+# ----------------------------------------------------------------------------
+CLONE_LIMITS = {
+    "max_upload_mb": 20,
+    "extensions": [".wav", ".mp3", ".flac", ".ogg", ".m4a"],
+    "ref_min_seconds": 1.0,
+    "ref_recommended_seconds": [3.0, 10.0],
+    "ref_max_seconds": 20.0,
+    "preview_max_chars": 300,
+    "name_max_chars": 40,
+    "style_max_chars": 40,
+    "avatar_max_chars": 8,
+}
+PREVIEW_TTL_SECONDS = 3600
+LANGUAGES = set(legacy._ALL_LANGUAGES)
 
 
 # ----------------------------------------------------------------------------
@@ -88,6 +109,89 @@ def _history_json(it: dict) -> dict:
         "grad": voice.get("grad", ""),
         "audio_url": _audio_url(it["file_path"]),
     }
+
+
+def _rm(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _upload_ext(upload: UploadFile) -> str:
+    ext = os.path.splitext(upload.filename or "")[1].lower()
+    if ext not in CLONE_LIMITS["extensions"]:
+        allowed = ", ".join(CLONE_LIMITS["extensions"])
+        raise HTTPException(400, f"Định dạng '{ext or 'không rõ'}' không được hỗ trợ. Chỉ nhận: {allowed}")
+    return ext
+
+
+def _save_upload(upload: UploadFile, dest: str) -> int:
+    """Ghi file upload ra đĩa, từ chối (413) nếu vượt giới hạn dung lượng."""
+    limit_mb = CLONE_LIMITS["max_upload_mb"]
+    size = 0
+    try:
+        with open(dest, "wb") as f:
+            while chunk := upload.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit_mb * 1024 * 1024:
+                    raise HTTPException(413, f"File vượt quá {limit_mb}MB")
+                f.write(chunk)
+    except Exception:
+        _rm(dest)
+        raise
+    return size
+
+
+def _inspect_audio(path: str) -> dict:
+    """Đọc audio mẫu rồi đối chiếu giới hạn: {duration, errors, warnings}.
+
+    errors   -> server sẽ từ chối.
+    warnings -> vẫn chạy được nhưng chất lượng clone có thể kém.
+    """
+    lim = CLONE_LIMITS
+    try:
+        data, sr = load_waveform(path)
+        duration = float(data.shape[-1]) / sr
+        rms = float(np.sqrt(np.mean(np.square(data)))) if data.size else 0.0
+    except Exception as e:
+        msg = f"Không đọc được file âm thanh ({type(e).__name__}). File có thể bị hỏng, hoặc máy chủ thiếu ffmpeg để đọc định dạng này."
+        return {"duration": None, "errors": [msg], "warnings": []}
+
+    errors, warnings = [], []
+    lo, hi = lim["ref_recommended_seconds"]
+    if rms < 1e-4:
+        errors.append("Audio gần như im lặng, không có giọng nói để clone.")
+    if duration < lim["ref_min_seconds"]:
+        errors.append(f"Audio quá ngắn ({duration:.1f}s). Cần tối thiểu {lim['ref_min_seconds']:g}s.")
+    elif duration > lim["ref_max_seconds"]:
+        errors.append(f"Audio quá dài ({duration:.1f}s). Tối đa {lim['ref_max_seconds']:g}s, hãy cắt bớt.")
+    elif duration < lo or duration > hi:
+        warnings.append(f"Audio dài {duration:.1f}s. Độ dài {lo:g}–{hi:g}s cho chất lượng clone tốt nhất.")
+    return {"duration": round(duration, 2), "errors": errors, "warnings": warnings}
+
+
+def _validate_audio(path: str) -> dict:
+    info = _inspect_audio(path)
+    if info["errors"]:
+        raise HTTPException(400, " ".join(info["errors"]))
+    return info
+
+
+def _check_language(language: str) -> None:
+    # Model âm thầm bỏ qua ngôn ngữ lạ (chuyển sang tự nhận diện) nên phải chặn ở đây.
+    if language not in LANGUAGES:
+        raise HTTPException(400, f"Ngôn ngữ không được hỗ trợ: '{language}'")
+
+
+def _prune_previews() -> None:
+    cutoff = time.time() - PREVIEW_TTL_SECONDS
+    if not os.path.isdir(PREVIEW_DIR):
+        return
+    for name in os.listdir(PREVIEW_DIR):
+        path = os.path.join(PREVIEW_DIR, name)
+        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+            _rm(path)
 
 
 def _voice_prompt(key: str):
@@ -128,7 +232,7 @@ def health():
 
 @app.get("/api/meta")
 def meta():
-    return {"languages": legacy._ALL_LANGUAGES, "device": STATE["device"]}
+    return {"languages": legacy._ALL_LANGUAGES, "device": STATE["device"], "clone": CLONE_LIMITS}
 
 
 @app.get("/api/files")
@@ -148,31 +252,60 @@ def list_voices():
     ]
 
 
+@app.post("/api/voices/inspect")
+def inspect_voice(audio: UploadFile = File(...)):
+    """Kiểm tra audio mẫu theo đúng luật của server (độ dài, dung lượng, định dạng) trước khi clone."""
+    tmp = os.path.join(tempfile.gettempdir(), f"inspect_{uuid.uuid4().hex}{os.path.splitext(audio.filename or '')[1].lower()}")
+    try:
+        _upload_ext(audio)
+        _save_upload(audio, tmp)
+        return _inspect_audio(tmp)
+    except HTTPException as e:
+        return {"duration": None, "errors": [str(e.detail)], "warnings": []}
+    finally:
+        _rm(tmp)
+
+
 @app.post("/api/voices")
-async def create_voice(
+def create_voice(
     audio: UploadFile = File(...),
     name: str = Form(...),
     avatar: str = Form("🎙️"),
     style_tag: str = Form("Custom Voice"),
     ref_text: str = Form(""),
 ):
-    name = name.strip()
+    lim = CLONE_LIMITS
+    name, avatar, style_tag = name.strip(), avatar.strip() or "🎙️", style_tag.strip() or "Custom Voice"
     if not name:
         raise HTTPException(400, "Vui lòng nhập tên giọng")
-    vid = f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-    saved = os.path.join(legacy.CUSTOM_VOICES_DIR, f"{vid}.wav")
-    with open(saved, "wb") as f:
-        shutil.copyfileobj(audio.file, f)
-
-    ref_text = ref_text.strip()
-    if not ref_text:
-        try:
-            ref_text = _model().transcribe(saved).strip()
-        except Exception as e:
-            os.remove(saved)
-            raise HTTPException(500, f"Không thể nhận diện lời thoại: {e}")
+    for label, value, key in (("Tên giọng", name, "name_max_chars"), ("Phong cách", style_tag, "style_max_chars"), ("Icon", avatar, "avatar_max_chars")):
+        if len(value) > lim[key]:
+            raise HTTPException(400, f"{label} tối đa {lim[key]} ký tự")
 
     key = f"{avatar} {name} - {style_tag}"
+    if key in legacy.get_all_voices():
+        raise HTTPException(409, f"Đã có giọng '{name}' với icon và phong cách này. Hãy đổi tên hoặc phong cách.")
+
+    ext = _upload_ext(audio)
+    vid = f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+    saved = os.path.join(legacy.CUSTOM_VOICES_DIR, f"{vid}{ext}")
+    _save_upload(audio, saved)
+    try:
+        _validate_audio(saved)
+        ref_text = ref_text.strip()
+        if not ref_text:
+            try:
+                ref_text = _model().transcribe(saved).strip()
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(500, f"Không thể nhận diện lời thoại: {e}")
+            if not ref_text:
+                raise HTTPException(422, "Không nhận diện được lời thoại trong audio. Hãy nhập lời thoại thủ công.")
+    except Exception:
+        _rm(saved)
+        raise
+
     entry = {
         "id": vid, "name": name, "avatar": avatar, "style_tag": style_tag,
         "audio": saved, "audio_url": "", "ref_text": ref_text,
@@ -201,17 +334,25 @@ def preview_voice(
     text = text.strip()
     if not text:
         raise HTTPException(400, "Vui lòng nhập văn bản nghe thử")
+    if len(text) > CLONE_LIMITS["preview_max_chars"]:
+        raise HTTPException(400, f"Văn bản nghe thử tối đa {CLONE_LIMITS['preview_max_chars']} ký tự")
+    _check_language(language)
+    ext = _upload_ext(audio)
+
     os.makedirs(PREVIEW_DIR, exist_ok=True)
+    _prune_previews()
     pid = f"preview_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-    src = os.path.join(PREVIEW_DIR, f"{pid}_ref.wav")
+    src = os.path.join(PREVIEW_DIR, f"{pid}_ref{ext}")
     out = os.path.join(PREVIEW_DIR, f"{pid}.wav")
-    with open(src, "wb") as f:
-        shutil.copyfileobj(audio.file, f)
+    _save_upload(audio, src)
     try:
+        _validate_audio(src)
         ref_text = ref_text.strip()
         if not ref_text:
             ref_text = model.transcribe(src).strip()
-        prompt = model.create_voice_clone_prompt(ref_audio=src, ref_text=ref_text)
+            if not ref_text:
+                raise HTTPException(422, "Không nhận diện được lời thoại trong audio. Hãy nhập lời thoại thủ công.")
+        prompt = model.create_voice_clone_prompt(ref_audio=src, ref_text=ref_text, preprocess_prompt=preprocess_prompt)
         cfg = OmniVoiceGenerationConfig(denoise=denoise, preprocess_prompt=preprocess_prompt)
         wav = model.generate(
             text=text,
@@ -221,10 +362,12 @@ def preview_voice(
         )
         data = (wav[0] * 32767).astype(np.int16)
         sf.write(out, data, model.sampling_rate)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Lỗi nghe thử: {type(e).__name__}: {e}")
     finally:
-        os.remove(src)
+        _rm(src)
     return {"audio_url": _audio_url(out), "duration": round(len(data) / model.sampling_rate, 1), "ref_text": ref_text}
 
 
@@ -244,17 +387,22 @@ def delete_voice(key: str):
 
 
 @app.post("/api/transcribe")
-async def transcribe(audio: UploadFile = File(...)):
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        shutil.copyfileobj(audio.file, tmp)
+def transcribe(audio: UploadFile = File(...)):
+    ext = _upload_ext(audio)
+    tmp = os.path.join(tempfile.gettempdir(), f"asr_{uuid.uuid4().hex}{ext}")
+    _save_upload(audio, tmp)
     try:
+        _validate_audio(tmp)
         t0 = time.time()
-        text = _model().transcribe(tmp.name).strip()
+        try:
+            text = _model().transcribe(tmp).strip()
+        except Exception as e:
+            raise HTTPException(500, f"Lỗi ASR: {e}")
+        if not text:
+            raise HTTPException(422, "Không nhận diện được lời thoại trong audio.")
         return {"text": text, "elapsed": round(time.time() - t0, 1)}
-    except Exception as e:
-        raise HTTPException(500, f"Lỗi ASR: {e}")
     finally:
-        os.remove(tmp.name)
+        _rm(tmp)
 
 
 @app.post("/api/generate")

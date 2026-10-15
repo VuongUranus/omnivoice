@@ -20,6 +20,7 @@ export default function App() {
   const [voices, setVoices] = useState([])
   const [history, setHistory] = useState([])
   const [languages, setLanguages] = useState(['Auto'])
+  const [limits, setLimits] = useState(null) // giới hạn Voice Clone do server quy định
   const [health, setHealth] = useState({ ready: false, device: '' })
   const [selectedVoice, setSelectedVoice] = usePersisted('ov.voice', null)
   const [modalOpen, setModalOpen] = useState(false)
@@ -42,15 +43,28 @@ export default function App() {
   }, [])
   const refreshHistory = useCallback(async () => setHistory(await api.history()), [])
 
+  const loadMeta = useCallback(
+    () => api.meta().then((m) => { setLanguages(m.languages); setLimits(m.clone) }).catch(() => {}),
+    [],
+  )
+
   useEffect(() => {
     refreshVoices().catch(() => {})
     refreshHistory().catch(() => {})
-    api.meta().then((m) => setLanguages(m.languages)).catch(() => {})
+    loadMeta()
     const poll = () => api.health().then(setHealth).catch(() => setHealth({ ready: false, device: '' }))
     poll()
     const t = setInterval(poll, 5000)
     return () => clearInterval(t)
-  }, [refreshVoices, refreshHistory])
+  }, [refreshVoices, refreshHistory, loadMeta])
+
+  // Nếu mở web trước khi server sẵn sàng, nạp lại dữ liệu ngay khi engine báo ready
+  useEffect(() => {
+    if (!health.ready) return
+    loadMeta()
+    refreshVoices().catch(() => {})
+    refreshHistory().catch(() => {})
+  }, [health.ready, loadMeta, refreshVoices, refreshHistory])
 
   const play = (item) => {
     if (current?.id === item.id) {
@@ -119,7 +133,7 @@ export default function App() {
                 current={current} playing={playing} onPlay={play} voiceOf={voiceOf} />
             )}
             {page === 'library' && <VoiceLibrary voices={voices} onUse={useVoice} onChanged={refreshVoices} />}
-            {page === 'clone' && <VoiceClone languages={languages} onSaved={refreshVoices} ready={health.ready} />}
+            {page === 'clone' && <VoiceClone languages={languages} limits={limits} onSaved={refreshVoices} ready={health.ready} />}
           </div>
           <Player item={current} voice={voiceOf(current)} audioRef={audioRef} playing={playing} pos={pos} />
         </main>
