@@ -1,3 +1,4 @@
+import { useConfirm } from '../confirm'
 import { useRef, useState } from 'react'
 import { Pause, Play, Search, Trash2, X } from 'lucide-react'
 import { api } from '../api'
@@ -40,6 +41,7 @@ export function VoiceRow({ voice, selected, onUse, onDelete }) {
 
 // Lọc + tìm kiếm dùng chung cho modal và trang Voice Library
 export function VoiceBrowser({ voices, selected, onUse, onChanged, scrollClass = '' }) {
+  const confirm = useConfirm()
   const [tab, setTab] = useState('library')
   const [q, setQ] = useState('')
   const needle = q.trim().toLowerCase()
@@ -48,7 +50,12 @@ export function VoiceBrowser({ voices, selected, onUse, onChanged, scrollClass =
     .filter((v) => !needle || [v.name, v.style_tag, v.desc, ...(v.tags || [])].join(' ').toLowerCase().includes(needle))
 
   const remove = async (v) => {
-    if (confirm(`Xoá giọng "${v.name}"?`)) { await api.deleteVoice(v.key); onChanged() }
+    const ok = await confirm({
+      title: 'Xoá giọng?',
+      message: `Giọng "${v.name}" sẽ bị xoá khỏi thư viện. Hành động này không thể hoàn tác.`,
+      confirmText: 'Xoá',
+    })
+    if (ok) { await api.deleteVoice(v.key); onChanged() }
   }
 
   return (

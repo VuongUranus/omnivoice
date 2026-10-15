@@ -1,3 +1,4 @@
+import { useConfirm } from '../confirm'
 import { Download, Pause, Play, Trash2 } from 'lucide-react'
 import { api } from '../api'
 
@@ -5,6 +6,7 @@ const dayKey = (ts) => new Date(ts * 1000).toLocaleDateString('vi-VN', { day: 'n
 const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
 
 export default function HistoryPanel({ items, current, playing, onPlay, onChanged }) {
+  const confirm = useConfirm()
   if (!items.length) return <p className="py-16 text-center text-sm text-slate-400">Chưa có bản ghi nào.</p>
 
   const groups = []
@@ -39,7 +41,10 @@ export default function HistoryPanel({ items, current, playing, onPlay, onChange
           })}
         </section>
       ))}
-      <button onClick={async () => { if (confirm('Xoá toàn bộ lịch sử?')) { await api.clearHistory(); onChanged() } }}
+      <button onClick={async () => {
+        const ok = await confirm({ title: 'Xoá toàn bộ lịch sử?', message: 'Tất cả bản âm thanh đã tạo sẽ bị xoá vĩnh viễn.', confirmText: 'Xoá tất cả' })
+        if (ok) { await api.clearHistory(); onChanged() }
+      }}
         className="mt-2 flex items-center gap-1.5 px-1 text-xs text-slate-400 hover:text-red-600"><Trash2 size={13} /> Xoá tất cả</button>
     </div>
   )
