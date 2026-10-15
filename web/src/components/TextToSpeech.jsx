@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { ArrowLeftRight, Eraser, Globe, Loader2, RotateCcw, Sparkles, Upload, Wand2 } from 'lucide-react'
 import { api } from '../api'
 import HistoryPanel from './HistoryPanel'
-import { Button, Slider, Toggle, VoiceAvatar, inputCls } from './ui'
+import { Button, Select, Slider, Toggle, VoiceAvatar, inputCls, langOptions } from './ui'
 
 const MAX = 5000
 const DEFAULTS = { speed: 1, cfg: 2, steps: 32, denoise: true, pre: true, post: true }
@@ -60,13 +60,7 @@ export default function TextToSpeech({ voice, languages, ready, onGenerated, onO
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3 dark:border-slate-800">
             <div className="flex items-center gap-2">
-              <div className="relative">
-                <Globe size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <select value={language} onChange={(e) => setLanguage(e.target.value)}
-                  className="w-44 appearance-none rounded-xl border-0 bg-slate-100 py-2.5 pl-9 pr-3 text-xs text-slate-600 outline-none dark:bg-slate-800 dark:text-slate-300">
-                  {languages.map((l) => <option key={l} value={l}>{l === 'Auto' ? 'Detect Language' : l}</option>)}
-                </select>
-              </div>
+              <Select value={language} onChange={setLanguage} options={langOptions(languages)} icon={Globe} up className="w-44" />
               <button onClick={() => fileRef.current.click()} title="Nạp file .txt" className="rounded-xl border border-slate-200 p-2.5 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"><Upload size={16} /></button>
               <input ref={fileRef} type="file" accept=".txt,text/plain" hidden onChange={loadFile} />
             </div>

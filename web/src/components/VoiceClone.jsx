@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Info, Inbox, Loader2, Mic, Save, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
 import { api } from '../api'
-import { Button, Toggle, inputCls } from './ui'
+import { Button, Select, Toggle, inputCls, langOptions } from './ui'
 
 const SAMPLE = 'Xin chào, rất vui được hỗ trợ bạn. Hãy chọn một giọng nói phù hợp và cùng bắt đầu hành trình sáng tạo âm thanh nhé.'
 const MAX_PREVIEW = 300
 const MAX_MB = 20
-
 export default function VoiceClone({ languages, onSaved, ready }) {
   const [file, setFile] = useState(null)
   const [fileUrl, setFileUrl] = useState('')
@@ -149,12 +148,10 @@ export default function VoiceClone({ languages, onSaved, ready }) {
       <Toggle checked={pre} onChange={setPre} label="Tiền xử lý audio mẫu" />
 
       <h2 className={`${h} mt-6`}>Text to Preview</h2>
-      <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
-        <select value={language} onChange={(e) => setLanguage(e.target.value)} className="w-full border-b border-slate-200 bg-transparent px-3 py-2.5 text-sm outline-none dark:border-slate-800">
-          {languages.map((l) => <option key={l} value={l}>{l === 'Auto' ? 'Detect Language' : l}</option>)}
-        </select>
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800">
+        <Select value={language} onChange={setLanguage} options={langOptions(languages)} triggerClass="rounded-b-none rounded-t-xl bg-transparent px-3 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-900" />
         <textarea value={text} maxLength={MAX_PREVIEW} onChange={(e) => setText(e.target.value)} rows={4}
-          className="w-full resize-none bg-transparent p-3 text-sm outline-none" />
+          className="w-full resize-none rounded-b-xl bg-transparent p-3 text-sm outline-none" />
         <div className="px-3 pb-2 text-xs text-slate-400">{text.length} / {MAX_PREVIEW} characters</div>
       </div>
 
