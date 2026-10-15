@@ -10,12 +10,12 @@ const SAMPLE = 'Xin chào, rất vui được hỗ trợ bạn. Hãy chọn mộ
 
 // Mọi giới hạn (dung lượng, độ dài, số ký tự, định dạng) lấy từ `limits` do server trả về
 // qua /api/meta, nên giao diện luôn trùng với những gì server thực sự kiểm tra.
-export default function VoiceClone({ languages, limits, onSaved, ready, incomingFile, onIncomingConsumed }) {
+export default function VoiceClone({ languages, limits, onSaved, ready, modelBusy = 0, incomingFile, onIncomingConsumed }) {
   if (!limits) return <p className="py-24 text-center text-sm text-slate-400">Đang tải cấu hình từ server…</p>
-  return <CloneForm languages={languages} limits={limits} onSaved={onSaved} ready={ready} incomingFile={incomingFile} onIncomingConsumed={onIncomingConsumed} />
+  return <CloneForm languages={languages} limits={limits} onSaved={onSaved} ready={ready} modelBusy={modelBusy} incomingFile={incomingFile} onIncomingConsumed={onIncomingConsumed} />
 }
 
-function CloneForm({ languages, limits, onSaved, ready, incomingFile, onIncomingConsumed }) {
+function CloneForm({ languages, limits, onSaved, ready, modelBusy, incomingFile, onIncomingConsumed }) {
   const [lo, hi] = limits.ref_recommended_seconds
   const [file, setFile] = useState(null)
   const [fileUrl, setFileUrl] = useState('')
@@ -221,6 +221,7 @@ function CloneForm({ languages, limits, onSaved, ready, incomingFile, onIncoming
           {busy === 'preview' ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} Generate
         </Button>
       </div>
+      {modelBusy > 0 && <p className="mt-2 text-right text-xs text-amber-600">Đang có {modelBusy} yêu cầu tạo giọng trong hàng đợi: Generate và nhận diện chữ ở đây sẽ chờ tới lượt.</p>}
       <div className="mt-2 space-y-0.5 text-right text-xs text-slate-400">
         {missingPreview.length > 0 && <p>Generate cần: {missingPreview.join(', ')}</p>}
         {missingSave.length > 0 && <p>Lưu cần: {missingSave.join(', ')}</p>}

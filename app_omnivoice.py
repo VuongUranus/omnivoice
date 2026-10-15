@@ -2108,9 +2108,12 @@ def load_history():
 
 
 def save_history(items):
+    # Ghi ra file tạm rồi thay thế để người đọc không bao giờ thấy file dở dang (bản React đọc/ghi đồng thời)
+    tmp = f"{HISTORY_INDEX}.tmp"
     try:
-        with open(HISTORY_INDEX, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(items, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, HISTORY_INDEX)
     except Exception as e:
         logging.warning(f"Error saving history: {e}")
 

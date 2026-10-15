@@ -1,7 +1,9 @@
 import { usePersisted } from './usePersisted'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AudioLines, Cpu, Library, Moon, Sun, Copy, Scissors } from 'lucide-react'
+import { AudioLines, Cpu, Library, Loader2, Moon, Sun, Copy, Scissors } from 'lucide-react'
 import { api } from './api'
+import { useJobs } from './useJobs'
+import { useToast } from './toast'
 import TextToSpeech from './components/TextToSpeech'
 import VoiceClone from './components/VoiceClone'
 import AudioTrim from './components/AudioTrim'
@@ -78,7 +80,22 @@ export default function App() {
       setTimeout(() => audioRef.current?.play().catch(() => {}), 0)
     }
   }
-  const onGenerated = (item) => { setHistory((h) => [item, ...h]); setCurrent(item); setTimeout(() => audioRef.current?.play().catch(() => {}), 0) }
+  const toast = useToast()
+  // Hàng đợi tạo giọng: job xong thì thêm vào History; chỉ tự phát khi đang ở trang TTS và chưa có gì đang phát
+  const queue = useJobs({
+    onDone: (job) => {
+      const item = job.result
+      setHistory((h) => [item, ...h.filter((x) => x.id !== item.id)])
+      if (page === 'tts' && !playing) { setCurrent(item); setTimeout(() => audioRef.current?.play().catch(() => {}), 0) }
+      toast.push({ kind: 'success', title: 'Đã tạo xong', message: job.text_preview, action: { label: 'Nghe', onClick: () => play(item) } })
+    },
+    onFailed: (job) => toast.push({ kind: 'error', title: 'Tạo giọng thất bại', message: job.error, duration: 12000 }),
+    onLost: () => toast.push({ kind: 'error', title: 'Một yêu cầu đã bị mất', message: 'Server đã khởi động lại nên hàng đợi bị xoá. Hãy gửi lại.', duration: 12000 }),
+  })
+  const jobsBusy = (health.jobs?.running ?? 0) + (health.jobs?.queued ?? 0)
+  // Hàng đợi có thể được tạo từ tab khác: khi server báo có job thì bắt đầu theo dõi
+  useEffect(() => { if (jobsBusy > 0) queue.kick() }, [jobsBusy, queue.kick])
+  useEffect(() => { document.title = queue.active ? `(${queue.active}) OmniVoice Studio` : 'OmniVoice Studio' }, [queue.active])
   const voiceOf = (item) => voices.find((v) => v.key === item?.voice_choice)
   const useVoice = (key) => { setSelectedVoice(key); setModalOpen(false); setPage('tts') }
   const voice = voices.find((v) => v.key === selectedVoice)
@@ -92,6 +109,13 @@ export default function App() {
           <span className="ml-1 text-sm text-slate-400">Audio</span>
         </div>
         <div className="flex items-center gap-3">
+          {queue.active > 0 && (
+            <button onClick={() => setPage('tts')} title="Xem hàng đợi tạo giọng" data-testid="queue-pill"
+              className="flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100 dark:bg-brand-500/15 dark:text-brand-100">
+              <Loader2 size={13} className="animate-spin" />
+              {queue.running > 0 ? `${queue.running} đang tạo` : ''}{queue.running > 0 && queue.queued > 0 ? ' · ' : ''}{queue.queued > 0 ? `${queue.queued} chờ` : ''}
+            </button>
+          )}
           <span className="flex items-center gap-2 rounded-full border border-slate-200 px-3 py-1.5 text-xs dark:border-slate-800">
             <Cpu size={14} className="text-brand-500" />
             <span className={`h-1.5 w-1.5 rounded-full ${health.ready ? 'bg-emerald-500' : 'animate-pulse bg-amber-500'}`} />
@@ -131,13 +155,14 @@ export default function App() {
               ))}
             </div>
             {page === 'tts' && (
-              <TextToSpeech voice={voice} languages={languages} ttsLimits={ttsLimits} ready={health.ready} onGenerated={onGenerated}
+              <TextToSpeech voice={voice} languages={languages} ttsLimits={ttsLimits} ready={health.ready} onSubmit={queue.submit}
+                jobs={queue.jobs} jobsOffset={queue.offset} onCancelJob={queue.cancel} onRetryJob={queue.retry} onDismissJob={queue.dismiss}
                 onOpenVoices={() => setModalOpen(true)} history={history} onHistoryChanged={refreshHistory}
                 current={current} playing={playing} onPlay={play} voiceOf={voiceOf} />
             )}
             {page === 'library' && <VoiceLibrary voices={voices} limits={limits} onUse={useVoice} onChanged={refreshVoices} />}
             {page === 'clone' && (
-              <VoiceClone languages={languages} limits={limits} onSaved={refreshVoices} ready={health.ready}
+              <VoiceClone languages={languages} limits={limits} onSaved={refreshVoices} ready={health.ready} modelBusy={queue.active}
                 incomingFile={cloneFile} onIncomingConsumed={() => setCloneFile(null)} />
             )}
             {page === 'trim' && <AudioTrim history={history} limits={limits} onUseForClone={(f) => { setCloneFile(f); setPage('clone') }} />}

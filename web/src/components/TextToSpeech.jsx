@@ -1,15 +1,16 @@
 import { usePersisted } from '../usePersisted'
 import { useConfirm } from '../confirm'
+import { useToast } from '../toast'
+import JobsStrip from './JobsStrip'
 import { clip } from '../audioCheck'
 import { useRef, useState } from 'react'
 import { ArrowLeftRight, Eraser, Globe, Loader2, RotateCcw, Sparkles, Upload, Wand2 } from 'lucide-react'
-import { api } from '../api'
 import HistoryPanel from './HistoryPanel'
 import { Button, Select, Slider, Toggle, VoiceAvatar, inputCls, langOptions } from './ui'
 
 const DEFAULTS = { speed: 1, cfg: 2, steps: 32, denoise: true, pre: true, post: true }
 
-export default function TextToSpeech({ voice, languages, ttsLimits, ready, onGenerated, onOpenVoices, history, onHistoryChanged, current, playing, onPlay }) {
+export default function TextToSpeech({ voice, languages, ttsLimits, ready, onSubmit, jobs, jobsOffset, onCancelJob, onRetryJob, onDismissJob, onOpenVoices, history, onHistoryChanged, current, playing, onPlay }) {
   const [tab, setTab] = usePersisted('ov.tts.tab', 'settings')
   const [text, setText] = useState('')
   const [instruct, setInstruct] = usePersisted('ov.tts.instruct', '')
@@ -22,6 +23,7 @@ export default function TextToSpeech({ voice, languages, ttsLimits, ready, onGen
   const fileRef = useRef(null)
   const areaRef = useRef(null)
   const confirm = useConfirm()
+  const toast = useToast()
   // Giới hạn do server quy định (/api/meta); chưa tải xong thì chưa cho Generate
   const max = ttsLimits?.max_chars
   const chars = Array.from(text).length
@@ -32,11 +34,13 @@ export default function TextToSpeech({ voice, languages, ttsLimits, ready, onGen
   const generate = async () => {
     setBusy(true); setError(null)
     try {
-      const item = await api.generate({
+      // Gửi vào hàng đợi và trả về ngay; khi xong, kết quả tự xuất hiện trong History
+      const job = await onSubmit({
         text, voice: voice.key, instruct, language, speed: s.speed, guidance_scale: s.cfg, num_step: s.steps,
         denoise: s.denoise, preprocess_prompt: s.pre, postprocess_output: s.post,
       })
-      onGenerated(item); setTab('history')
+      setTab('history')
+      toast.push({ kind: 'info', title: job.ahead > 0 ? `Đã thêm vào hàng đợi · phía trước còn ${job.ahead} yêu cầu` : 'Đang tạo giọng nói…', duration: 3000 })
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
@@ -89,7 +93,7 @@ export default function TextToSpeech({ voice, languages, ttsLimits, ready, onGen
               <input ref={fileRef} type="file" accept=".txt,text/plain" hidden onChange={loadFile} />
             </div>
             <Button onClick={generate} disabled={busy || !ready || !max || !text.trim() || !voice} className="px-6 py-2.5">
-              {busy ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} {busy ? 'Đang tạo…' : 'Generate'}
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} {busy ? 'Đang gửi…' : 'Generate'}
             </Button>
           </div>
           {notice && <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{notice}</p>}
@@ -98,6 +102,7 @@ export default function TextToSpeech({ voice, languages, ttsLimits, ready, onGen
 
         {/* Panel phải */}
         <div className="flex min-h-0 flex-col rounded-2xl border border-slate-100 p-4 dark:border-slate-800">
+          <JobsStrip jobs={jobs} offset={jobsOffset} onCancel={onCancelJob} onRetry={onRetryJob} onDismiss={onDismissJob} />
           <div className="mb-3 flex gap-5 border-b border-slate-100 dark:border-slate-800">
             {[['settings', 'Settings'], ['history', 'History']].map(([id, l]) => (
               <button key={id} onClick={() => setTab(id)}

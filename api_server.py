@@ -12,6 +12,7 @@ Prod:  cd web && npm run build    (api_server tự phục vụ web/dist)
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ from omnivoice.utils.common import get_best_device
 from omnivoice.utils.lang_map import LANG_NAMES, lang_display_name
 
 import app_omnivoice as legacy
+from jobs import JobConflict, JobNotFound, JobQueue, QueueFull
 
 try:
     from omnivoice.models.omnivoice import _resolve_instruct  # luật kiểm tra instruct mà model áp dụng khi Generate
@@ -107,10 +109,29 @@ OVERRIDES_FILE = os.path.join(legacy.CUSTOM_VOICES_DIR, "preset_overrides.json")
 EDITABLE_FIELDS = ("name", "avatar", "style_tag", "desc", "tags", "grad", "instruct", "ref_text", "audio")
 VOICE_LOCK = threading.RLock()
 
+# Khoá và hàng đợi cho việc tạo giọng nền. Quy tắc thứ tự khoá để không bị deadlock:
+#   không bao giờ lấy VOICE_LOCK khi đang giữ MODEL_LOCK (ASR/prompt chạy NGOÀI VOICE_LOCK).
+# Model không có tài liệu về thread-safety nên MỌI chỗ gọi model đều đi qua MODEL_LOCK.
+MODEL_LOCK = threading.RLock()
+HISTORY_LOCK = threading.RLock()
+MODEL_WAIT_SECONDS = 300
+JOB_LIMITS = {"max_pending": 20}
+
 
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
+@contextlib.contextmanager
+def _model_lock():
+    """Chờ tới lượt dùng model (worker hàng đợi đang chạy thì phải đợi), quá lâu thì báo bận."""
+    if not MODEL_LOCK.acquire(timeout=MODEL_WAIT_SECONDS):
+        raise HTTPException(503, "Model đang bận xử lý hàng đợi, hãy thử lại sau.")
+    try:
+        yield
+    finally:
+        MODEL_LOCK.release()
+
+
 def _model() -> OmniVoice:
     if STATE["model"] is None:
         raise HTTPException(503, "Model chưa sẵn sàng")
@@ -255,7 +276,8 @@ def _ref_text_or_asr(path: str, ref_text: str) -> str:
     if ref_text:
         return ref_text
     try:
-        text = _model().transcribe(path).strip()
+        with _model_lock():
+            text = _model().transcribe(path).strip()
     except HTTPException:
         raise
     except Exception as e:
@@ -360,7 +382,8 @@ def _voice_prompt(key: str):
     v = all_voices().get(key)
     if not v or not v.get("audio"):
         return None
-    prompt = _model().create_voice_clone_prompt(ref_audio=v["audio"], ref_text=v.get("ref_text") or None)
+    with _model_lock():
+        prompt = _model().create_voice_clone_prompt(ref_audio=v["audio"], ref_text=v.get("ref_text") or None)
     cache[key] = prompt
     return prompt
 
@@ -386,12 +409,12 @@ class GenerateRequest(BaseModel):
 # ----------------------------------------------------------------------------
 @app.get("/api/health")
 def health():
-    return {"ready": STATE["model"] is not None, "device": STATE["device"]}
+    return {"ready": STATE["model"] is not None, "device": STATE["device"], "jobs": JOBS.counts()}
 
 
 @app.get("/api/meta")
 def meta():
-    return {"languages": legacy._ALL_LANGUAGES, "device": STATE["device"], "clone": CLONE_LIMITS, "tts": TTS_LIMITS}
+    return {"languages": legacy._ALL_LANGUAGES, "device": STATE["device"], "clone": CLONE_LIMITS, "tts": TTS_LIMITS, "jobs": JOB_LIMITS}
 
 
 @app.get("/api/files")
@@ -437,35 +460,36 @@ def create_voice(
     grad: str = Form(""),
     instruct: str = Form(""),
 ):
-    with VOICE_LOCK:
-        fields = _clean_voice_fields(name=name, avatar=avatar, style_tag=style_tag, desc=desc, tags=tags,
-                                     grad=grad, instruct=instruct)
-        ext = _upload_ext(audio)
-        vid = f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-        saved = os.path.join(legacy.CUSTOM_VOICES_DIR, f"{vid}{ext}")
-        _save_upload(audio, saved)
-        try:
-            _validate_audio(saved)
-            ref_text = _ref_text_or_asr(saved, ref_text)
-        except Exception:
-            _rm(saved)
-            raise
-
-        # Key là định danh cố định (không đổi khi sửa tên) nên phải duy nhất, kể cả với giọng đã đổi tên/đã xoá
-        key = f"{fields['avatar']} {fields['name']} - {fields['style_tag']}"
-        custom = legacy.load_custom_voices()
-        if key in custom or key in legacy.PRESET_VOICES or key in all_voices():
-            key = f"{key} ({vid})"
-        entry = {
-            "id": vid, "audio": saved, "audio_url": "", "ref_text": ref_text, **fields,
-            "desc": fields["desc"] or f"Giọng nhân bản tùy chỉnh: {ref_text[:60]}...",
-            "tags": fields["tags"] or ["Tùy chỉnh", fields["style_tag"]],
-            "grad": fields["grad"] or DEFAULT_GRAD,
-        }
-        custom[key] = entry
-        legacy.save_custom_voices(custom)
-        STATE["voice_cache"].pop(key, None)
-        return _voice_json(key, entry)
+    clean = lambda: _clean_voice_fields(name=name, avatar=avatar, style_tag=style_tag, desc=desc, tags=tags,
+                                        grad=grad, instruct=instruct)
+    clean()  # từ chối sớm trước khi làm việc nặng; bản kiểm tra cuối cùng nằm trong khoá bên dưới
+    ext = _upload_ext(audio)
+    vid = f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+    saved = os.path.join(legacy.CUSTOM_VOICES_DIR, f"{vid}{ext}")
+    _save_upload(audio, saved)
+    try:
+        _validate_audio(saved)
+        ref_text = _ref_text_or_asr(saved, ref_text)  # chậm (ASR, có thể phải chờ hàng đợi): làm ngoài VOICE_LOCK
+        with VOICE_LOCK:
+            fields = clean()
+            # Key là định danh cố định (không đổi khi sửa tên) nên phải duy nhất, kể cả với giọng đã đổi tên/đã xoá
+            key = f"{fields['avatar']} {fields['name']} - {fields['style_tag']}"
+            custom = legacy.load_custom_voices()
+            if key in custom or key in legacy.PRESET_VOICES or key in all_voices():
+                key = f"{key} ({vid})"
+            entry = {
+                "id": vid, "audio": saved, "audio_url": "", "ref_text": ref_text, **fields,
+                "desc": fields["desc"] or f"Giọng nhân bản tùy chỉnh: {ref_text[:60]}...",
+                "tags": fields["tags"] or ["Tùy chỉnh", fields["style_tag"]],
+                "grad": fields["grad"] or DEFAULT_GRAD,
+            }
+            custom[key] = entry
+            legacy.save_custom_voices(custom)
+            STATE["voice_cache"].pop(key, None)
+            return _voice_json(key, entry)
+    except Exception:
+        _rm(saved)
+        raise
 
 
 @app.put("/api/voices")
@@ -482,53 +506,59 @@ def update_voice(
     ref_text: str = Form(""),
 ):
     """Sửa giọng (cả giọng có sẵn lẫn giọng tùy chỉnh). `audio` là tùy chọn: có thì thay file mẫu."""
-    with VOICE_LOCK:
-        current = all_voices().get(key)
-        if current is None:
-            raise HTTPException(404, "Không tìm thấy giọng")
-        preset = key in legacy.PRESET_VOICES
-        fields = _clean_voice_fields(name=name, avatar=avatar, style_tag=style_tag, desc=desc, tags=tags,
-                                     grad=grad, instruct=instruct, exclude_key=key)
-        fields["grad"] = fields["grad"] or current.get("grad") or DEFAULT_GRAD
+    clean = lambda: _clean_voice_fields(name=name, avatar=avatar, style_tag=style_tag, desc=desc, tags=tags,
+                                        grad=grad, instruct=instruct, exclude_key=key)
+    if all_voices().get(key) is None:
+        raise HTTPException(404, "Không tìm thấy giọng")
+    clean()  # từ chối sớm; bản kiểm tra cuối cùng nằm trong khoá bên dưới
 
-        new_audio = None
-        ref_text = ref_text.strip()
-        if audio is not None and audio.filename:
-            ext = _upload_ext(audio)
-            new_audio = os.path.join(legacy.CUSTOM_VOICES_DIR, f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}{ext}")
-            _save_upload(audio, new_audio)
-            try:
-                _validate_audio(new_audio)
-                ref_text = _ref_text_or_asr(new_audio, ref_text)  # audio mới thì lời thoại cũ không còn đúng
-            except Exception:
-                _rm(new_audio)
-                raise
-        elif not ref_text:
-            ref_text = current.get("ref_text", "")
-
-        desired = {**current, **fields, "ref_text": ref_text}
-        old_audio = current.get("audio")
+    new_audio = None
+    ref_text = ref_text.strip()
+    if audio is not None and audio.filename:
+        ext = _upload_ext(audio)
+        new_audio = os.path.join(legacy.CUSTOM_VOICES_DIR, f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}{ext}")
+        _save_upload(audio, new_audio)
+    try:
         if new_audio:
-            desired["audio"] = new_audio
+            _validate_audio(new_audio)
+            ref_text = _ref_text_or_asr(new_audio, ref_text)  # audio mới thì lời thoại cũ không còn đúng (ASR chậm: ngoài khoá)
+        with VOICE_LOCK:
+            current = all_voices().get(key)
+            if current is None:
+                raise HTTPException(404, "Không tìm thấy giọng")
+            preset = key in legacy.PRESET_VOICES
+            fields = clean()
+            fields["grad"] = fields["grad"] or current.get("grad") or DEFAULT_GRAD
+            if not new_audio and not ref_text:
+                ref_text = current.get("ref_text", "")
 
-        if preset:
-            data = _load_overrides()
-            base = legacy.PRESET_VOICES[key]
-            diff = {f: desired.get(f) for f in EDITABLE_FIELDS if desired.get(f) != base.get(f)}
-            if diff:
-                data["overrides"][key] = diff
+            desired = {**current, **fields, "ref_text": ref_text}
+            old_audio = current.get("audio")
+            if new_audio:
+                desired["audio"] = new_audio
+
+            if preset:
+                data = _load_overrides()
+                base = legacy.PRESET_VOICES[key]
+                diff = {f: desired.get(f) for f in EDITABLE_FIELDS if desired.get(f) != base.get(f)}
+                if diff:
+                    data["overrides"][key] = diff
+                else:
+                    data["overrides"].pop(key, None)
+                _save_overrides(data)
             else:
-                data["overrides"].pop(key, None)
-            _save_overrides(data)
-        else:
-            custom = legacy.load_custom_voices()
-            custom[key].update({f: desired[f] for f in EDITABLE_FIELDS if f in desired})
-            legacy.save_custom_voices(custom)
+                custom = legacy.load_custom_voices()
+                custom[key].update({f: desired[f] for f in EDITABLE_FIELDS if f in desired})
+                legacy.save_custom_voices(custom)
 
-        if new_audio and _own_audio(old_audio):
-            _rm(old_audio)  # chỉ xoá file mẫu cũ do người dùng tải lên, không bao giờ xoá file trong presets/
-        STATE["voice_cache"].pop(key, None)
-        return _voice_json(key, all_voices()[key])
+            if new_audio and _own_audio(old_audio):
+                _rm(old_audio)  # chỉ xoá file mẫu cũ do người dùng tải lên, không bao giờ xoá file trong presets/
+            STATE["voice_cache"].pop(key, None)
+            return _voice_json(key, all_voices()[key])
+    except Exception:
+        if new_audio:
+            _rm(new_audio)
+        raise
 
 
 @app.get("/api/voices/deleted")
@@ -598,18 +628,19 @@ def preview_voice(
     try:
         _validate_audio(src)
         ref_text = ref_text.strip()
-        if not ref_text:
-            ref_text = model.transcribe(src).strip()
-            if not ref_text:
-                raise HTTPException(422, "Không nhận diện được lời thoại trong audio. Hãy nhập lời thoại thủ công.")
-        prompt = model.create_voice_clone_prompt(ref_audio=src, ref_text=ref_text, preprocess_prompt=preprocess_prompt)
         cfg = OmniVoiceGenerationConfig(denoise=denoise, preprocess_prompt=preprocess_prompt)
-        wav = model.generate(
-            text=text,
-            language=None if language == "Auto" else language,
-            generation_config=cfg,
-            voice_clone_prompt=prompt,
-        )
+        with _model_lock():  # dùng chung model với hàng đợi tạo giọng nên có thể phải chờ
+            if not ref_text:
+                ref_text = model.transcribe(src).strip()
+                if not ref_text:
+                    raise HTTPException(422, "Không nhận diện được lời thoại trong audio. Hãy nhập lời thoại thủ công.")
+            prompt = model.create_voice_clone_prompt(ref_audio=src, ref_text=ref_text, preprocess_prompt=preprocess_prompt)
+            wav = model.generate(
+                text=text,
+                language=None if language == "Auto" else language,
+                generation_config=cfg,
+                voice_clone_prompt=prompt,
+            )
         data = (wav[0] * 32767).astype(np.int16)
         sf.write(out, data, model.sampling_rate)
     except HTTPException:
@@ -650,7 +681,10 @@ def transcribe(audio: UploadFile = File(...)):
         _validate_audio(tmp)
         t0 = time.time()
         try:
-            text = _model().transcribe(tmp).strip()
+            with _model_lock():
+                text = _model().transcribe(tmp).strip()
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(500, f"Lỗi ASR: {e}")
         if not text:
@@ -660,9 +694,8 @@ def transcribe(audio: UploadFile = File(...)):
         _rm(tmp)
 
 
-@app.post("/api/generate")
-def generate(req: GenerateRequest):
-    model = _model()
+def _validate_generation(req: GenerateRequest):
+    """Kiểm tra yêu cầu tạo giọng. Dùng cả lúc gửi (lỗi 4xx ngay) lẫn lúc chạy (giọng có thể đã bị sửa/xoá khi chờ)."""
     text = req.text.strip()
     if not text:
         raise HTTPException(400, "Vui lòng nhập văn bản")
@@ -670,65 +703,145 @@ def generate(req: GenerateRequest):
         raise HTTPException(400, f"Văn bản dài {len(text):,} ký tự, vượt giới hạn {TTS_LIMITS['max_chars']:,}. Hãy tách thành nhiều phần.")
     voices = all_voices()
     if req.voice not in voices:
-        raise HTTPException(404, "Giọng không tồn tại")
+        raise HTTPException(404, "Giọng không tồn tại hoặc đã bị xoá")
+    voice = voices[req.voice]
 
     # Kiểm tra instruct trước khi tốn thời gian tạo prompt giọng
-    instruct = req.instruct.strip() or voices[req.voice].get("instruct")
+    instruct = req.instruct.strip() or voice.get("instruct")
     err = _instruct_error(instruct)
     if err:
         hint = "" if req.instruct.strip() else " Vào Voice Library → Sửa giọng này để chỉnh lại instruct."
         raise HTTPException(400, f"Instruct không hợp lệ.{hint}\n{err}")
+    return text, voice, instruct
 
+
+def _run_generation(req: GenerateRequest) -> dict:
+    """Chạy trong worker của hàng đợi: tạo audio rồi ghi vào lịch sử."""
+    model = _model()
+    text, _voice, instruct = _validate_generation(req)
     cfg = OmniVoiceGenerationConfig(
         num_step=req.num_step, guidance_scale=req.guidance_scale, denoise=req.denoise,
         preprocess_prompt=req.preprocess_prompt, postprocess_output=req.postprocess_output,
     )
-    kw = {
-        "text": text,
-        "language": None if req.language == "Auto" else req.language,
-        "generation_config": cfg,
-        "voice_clone_prompt": _voice_prompt(req.voice),
-    }
-    if req.speed != 1.0:
-        kw["speed"] = req.speed
-    if instruct:
-        kw["instruct"] = instruct
-
-    try:
-        t0 = time.time()
-        audio = model.generate(**kw)
-        elapsed = time.time() - t0
-    except Exception as e:
-        raise HTTPException(500, f"Lỗi tổng hợp: {type(e).__name__}: {e}")
+    with MODEL_LOCK:
+        kw = {
+            "text": text,
+            "language": None if req.language == "Auto" else req.language,
+            "generation_config": cfg,
+            "voice_clone_prompt": _voice_prompt(req.voice),
+        }
+        if req.speed != 1.0:
+            kw["speed"] = req.speed
+        if instruct:
+            kw["instruct"] = instruct
+        try:
+            t0 = time.time()
+            audio = model.generate(**kw)
+            elapsed = time.time() - t0
+        except Exception as e:
+            raise HTTPException(500, f"Lỗi tổng hợp: {type(e).__name__}: {e}")
 
     waveform = (audio[0] * 32767).astype(np.int16)
     dur = len(waveform) / model.sampling_rate
-    items = legacy.add_to_history(waveform, model.sampling_rate, text, req.voice, dur, elapsed)
+    with HISTORY_LOCK:
+        items = legacy.add_to_history(waveform, model.sampling_rate, text, req.voice, dur, elapsed)
     return _history_json(items[0])
+
+
+JOBS = JobQueue(_run_generation, max_pending=JOB_LIMITS["max_pending"])
+
+
+def _submit_job(req: GenerateRequest):
+    text, voice, _ = _validate_generation(req)  # lỗi đầu vào trả về ngay như trước đây, không vào hàng đợi
+    meta = {
+        "text_preview": text if len(text) <= 80 else text[:80] + "…", "text_length": len(text),
+        "voice_key": req.voice, "voice_name": voice.get("name"), "avatar": voice.get("avatar", "🎙️"), "grad": voice.get("grad", ""),
+    }
+    try:
+        return JOBS.submit(req, meta)
+    except QueueFull as e:
+        raise HTTPException(429, str(e))
+
+
+@app.post("/api/generate")
+def generate(req: GenerateRequest):
+    """Bản đồng bộ (giữ để tương thích): đi qua cùng hàng đợi rồi chờ kết quả."""
+    job = _submit_job(req)
+    job.done.wait()
+    if job.status == "done":
+        return job.result
+    raise HTTPException(job.error_status if job.status == "failed" else 409, job.error or "Yêu cầu đã bị huỷ")
+
+
+@app.post("/api/jobs", status_code=202)
+def create_job(req: GenerateRequest):
+    """Gửi yêu cầu tạo giọng vào hàng đợi và trả về ngay."""
+    return JOBS.to_dict(_submit_job(req))
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    return {"jobs": JOBS.snapshot(), "counts": JOBS.counts(), "server_time": time.time()}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    try:
+        return JOBS.to_dict(JOBS.get(job_id))
+    except JobNotFound:
+        raise HTTPException(404, "Không tìm thấy job")
+
+
+@app.delete("/api/jobs/{job_id}")
+def cancel_job(job_id: str):
+    """Huỷ job đang chờ (job đã kết thúc thì bỏ khỏi danh sách; job đang chạy không huỷ được)."""
+    try:
+        JOBS.cancel(job_id)
+    except JobNotFound:
+        raise HTTPException(404, "Không tìm thấy job")
+    except JobConflict as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/retry", status_code=202)
+def retry_job(job_id: str):
+    try:
+        return JOBS.to_dict(JOBS.retry(job_id))
+    except JobNotFound:
+        raise HTTPException(404, "Không tìm thấy job")
+    except JobConflict as e:
+        raise HTTPException(409, str(e))
+    except QueueFull as e:
+        raise HTTPException(429, str(e))
 
 
 @app.get("/api/history")
 def history():
-    return [_history_json(it) for it in legacy.load_history()]
+    with HISTORY_LOCK:
+        items = legacy.load_history()
+    return [_history_json(it) for it in items]
 
 
 @app.delete("/api/history")
 def clear_history():
-    legacy.clear_all_history()
+    with HISTORY_LOCK:
+        legacy.clear_all_history()
     return {"ok": True}
 
 
 @app.delete("/api/history/{item_id}")
 def delete_history(item_id: str):
-    items = legacy.load_history()
-    keep = [it for it in items if it["id"] != item_id]
-    for it in items:
-        if it["id"] == item_id:
-            try:
-                os.remove(it["file_path"])
-            except OSError:
-                pass
-    legacy.save_history(keep)
+    with HISTORY_LOCK:
+        items = legacy.load_history()
+        keep = [it for it in items if it["id"] != item_id]
+        for it in items:
+            if it["id"] == item_id:
+                try:
+                    os.remove(it["file_path"])
+                except OSError:
+                    pass
+        legacy.save_history(keep)
     return {"ok": True}
 
 
@@ -745,8 +858,11 @@ def main():
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--max-chars", type=int, default=TTS_LIMITS["max_chars"],
                    help="Số ký tự tối đa mỗi lần tạo giọng (model không giới hạn, đây là chốt chặn thời gian xử lý)")
+    p.add_argument("--max-queue", type=int, default=JOB_LIMITS["max_pending"],
+                   help="Số yêu cầu tạo giọng tối đa được xếp hàng chờ cùng lúc")
     args = p.parse_args()
     TTS_LIMITS["max_chars"] = max(1, args.max_chars)
+    JOB_LIMITS["max_pending"] = JOBS.max_pending = max(1, args.max_queue)
 
     device = args.device or get_best_device()
     dtype = torch.float32 if str(device).startswith("mps") else torch.float16
