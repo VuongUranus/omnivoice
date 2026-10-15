@@ -47,3 +47,5 @@ Phiên bản web hiện đại hơn, dùng chung model, lịch sử và thư vi�
 Mở **http://127.0.0.1:8000**.
 
 Chế độ phát triển (hot reload): chạy `python api_server.py --device mps`, rồi `cd web && npm install && npm run dev` và mở http://127.0.0.1:5173.
+
+Giới hạn độ dài văn bản mỗi lần tạo giọng do server quy định (mặc định 5000 ký tự; bản thân model không giới hạn, văn bản dài được tự tách theo dấu câu). Đổi bằng `python api_server.py --device mps --max-chars 10000`, giao diện tự cập nhật theo.

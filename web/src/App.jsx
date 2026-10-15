@@ -1,9 +1,10 @@
 import { usePersisted } from './usePersisted'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AudioLines, Cpu, Library, Moon, Sun, Copy } from 'lucide-react'
+import { AudioLines, Cpu, Library, Moon, Sun, Copy, Scissors } from 'lucide-react'
 import { api } from './api'
 import TextToSpeech from './components/TextToSpeech'
 import VoiceClone from './components/VoiceClone'
+import AudioTrim from './components/AudioTrim'
 import VoiceLibrary from './components/VoiceLibrary'
 import VoiceModal from './components/VoiceModal'
 import Player from './components/Player'
@@ -11,7 +12,7 @@ import Player from './components/Player'
 const NAV = [
   { group: null, items: [{ id: 'library', label: 'Voice Library', icon: Library }] },
   { group: 'AI Generation', items: [{ id: 'tts', label: 'Text to Speech', icon: AudioLines }] },
-  { group: 'AI Tools', items: [{ id: 'clone', label: 'Voice Clone', icon: Copy }] },
+  { group: 'AI Tools', items: [{ id: 'clone', label: 'Voice Clone', icon: Copy }, { id: 'trim', label: 'Cắt audio', icon: Scissors }] },
 ]
 
 export default function App() {
@@ -21,6 +22,8 @@ export default function App() {
   const [history, setHistory] = useState([])
   const [languages, setLanguages] = useState(['Auto'])
   const [limits, setLimits] = useState(null) // giới hạn Voice Clone do server quy định
+  const [ttsLimits, setTtsLimits] = useState(null) // giới hạn văn bản Text to Speech do server quy định
+  const [cloneFile, setCloneFile] = useState(null) // file từ trang Cắt audio gửi sang Voice Clone
   const [health, setHealth] = useState({ ready: false, device: '' })
   const [selectedVoice, setSelectedVoice] = usePersisted('ov.voice', null)
   const [modalOpen, setModalOpen] = useState(false)
@@ -44,7 +47,7 @@ export default function App() {
   const refreshHistory = useCallback(async () => setHistory(await api.history()), [])
 
   const loadMeta = useCallback(
-    () => api.meta().then((m) => { setLanguages(m.languages); setLimits(m.clone) }).catch(() => {}),
+    () => api.meta().then((m) => { setLanguages(m.languages); setLimits(m.clone); setTtsLimits(m.tts) }).catch(() => {}),
     [],
   )
 
@@ -123,17 +126,21 @@ export default function App() {
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-3xl border-l border-t border-slate-100 dark:border-slate-800">
           <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-6 md:px-8">
             <div className="mb-4 flex gap-2 md:hidden">
-              {[['library', 'Library'], ['tts', 'TTS'], ['clone', 'Clone']].map(([id, l]) => (
+              {[['library', 'Library'], ['tts', 'TTS'], ['clone', 'Clone'], ['trim', 'Cắt']].map(([id, l]) => (
                 <button key={id} onClick={() => setPage(id)} className={`rounded-full px-3 py-1.5 text-xs ${page === id ? 'bg-slate-900 text-white' : 'bg-slate-100 dark:bg-slate-800'}`}>{l}</button>
               ))}
             </div>
             {page === 'tts' && (
-              <TextToSpeech voice={voice} languages={languages} ready={health.ready} onGenerated={onGenerated}
+              <TextToSpeech voice={voice} languages={languages} ttsLimits={ttsLimits} ready={health.ready} onGenerated={onGenerated}
                 onOpenVoices={() => setModalOpen(true)} history={history} onHistoryChanged={refreshHistory}
                 current={current} playing={playing} onPlay={play} voiceOf={voiceOf} />
             )}
             {page === 'library' && <VoiceLibrary voices={voices} limits={limits} onUse={useVoice} onChanged={refreshVoices} />}
-            {page === 'clone' && <VoiceClone languages={languages} limits={limits} onSaved={refreshVoices} ready={health.ready} />}
+            {page === 'clone' && (
+              <VoiceClone languages={languages} limits={limits} onSaved={refreshVoices} ready={health.ready}
+                incomingFile={cloneFile} onIncomingConsumed={() => setCloneFile(null)} />
+            )}
+            {page === 'trim' && <AudioTrim history={history} limits={limits} onUseForClone={(f) => { setCloneFile(f); setPage('clone') }} />}
           </div>
           <Player item={current} voice={voiceOf(current)} audioRef={audioRef} playing={playing} pos={pos} />
         </main>

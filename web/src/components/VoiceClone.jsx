@@ -10,12 +10,12 @@ const SAMPLE = 'Xin chào, rất vui được hỗ trợ bạn. Hãy chọn mộ
 
 // Mọi giới hạn (dung lượng, độ dài, số ký tự, định dạng) lấy từ `limits` do server trả về
 // qua /api/meta, nên giao diện luôn trùng với những gì server thực sự kiểm tra.
-export default function VoiceClone({ languages, limits, onSaved, ready }) {
+export default function VoiceClone({ languages, limits, onSaved, ready, incomingFile, onIncomingConsumed }) {
   if (!limits) return <p className="py-24 text-center text-sm text-slate-400">Đang tải cấu hình từ server…</p>
-  return <CloneForm languages={languages} limits={limits} onSaved={onSaved} ready={ready} />
+  return <CloneForm languages={languages} limits={limits} onSaved={onSaved} ready={ready} incomingFile={incomingFile} onIncomingConsumed={onIncomingConsumed} />
 }
 
-function CloneForm({ languages, limits, onSaved, ready }) {
+function CloneForm({ languages, limits, onSaved, ready, incomingFile, onIncomingConsumed }) {
   const [lo, hi] = limits.ref_recommended_seconds
   const [file, setFile] = useState(null)
   const [fileUrl, setFileUrl] = useState('')
@@ -65,6 +65,14 @@ function CloneForm({ languages, limits, onSaved, ready }) {
     if (problem) return setMsg({ ok: false, text: problem })
     setMsg(null); setResult(null); setFile(f)
   }
+
+  // File được gửi từ trang Cắt audio: nạp như thể vừa chọn file
+  useEffect(() => {
+    if (!incomingFile) return
+    pick(incomingFile)
+    onIncomingConsumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingFile])
 
   const toggleRecord = async () => {
     if (recording) { recRef.current.stop(); return }

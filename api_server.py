@@ -81,6 +81,11 @@ CLONE_LIMITS = {
 PREVIEW_TTL_SECONDS = 3600
 LANGUAGES = set(legacy._ALL_LANGUAGES)
 
+# Giới hạn độ dài văn bản cho Text to Speech. Bản thân model KHÔNG giới hạn (văn bản dài được tự tách theo
+# dấu câu thành các đoạn ~15s, xem docs/generation-parameters.md của OmniVoice); đây là chốt chặn để một
+# request không chạy quá lâu. Đổi bằng: python api_server.py --max-chars 10000
+TTS_LIMITS = {"max_chars": 5000}
+
 # Giới hạn khi thêm/sửa thông tin giọng (Voice Library)
 DEFAULT_GRAD = "linear-gradient(135deg,#ec4899,#8b5cf6)"
 GRADIENTS = [f"linear-gradient(135deg,{a},{b})" for a, b in (
@@ -386,7 +391,7 @@ def health():
 
 @app.get("/api/meta")
 def meta():
-    return {"languages": legacy._ALL_LANGUAGES, "device": STATE["device"], "clone": CLONE_LIMITS}
+    return {"languages": legacy._ALL_LANGUAGES, "device": STATE["device"], "clone": CLONE_LIMITS, "tts": TTS_LIMITS}
 
 
 @app.get("/api/files")
@@ -661,6 +666,8 @@ def generate(req: GenerateRequest):
     text = req.text.strip()
     if not text:
         raise HTTPException(400, "Vui lòng nhập văn bản")
+    if len(text) > TTS_LIMITS["max_chars"]:
+        raise HTTPException(400, f"Văn bản dài {len(text):,} ký tự, vượt giới hạn {TTS_LIMITS['max_chars']:,}. Hãy tách thành nhiều phần.")
     voices = all_voices()
     if req.voice not in voices:
         raise HTTPException(404, "Giọng không tồn tại")
@@ -736,7 +743,10 @@ def main():
     p.add_argument("--device", default=None)
     p.add_argument("--ip", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--max-chars", type=int, default=TTS_LIMITS["max_chars"],
+                   help="Số ký tự tối đa mỗi lần tạo giọng (model không giới hạn, đây là chốt chặn thời gian xử lý)")
     args = p.parse_args()
+    TTS_LIMITS["max_chars"] = max(1, args.max_chars)
 
     device = args.device or get_best_device()
     dtype = torch.float32 if str(device).startswith("mps") else torch.float16

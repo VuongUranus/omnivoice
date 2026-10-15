@@ -5,7 +5,7 @@ import { api } from '../api'
 const dayKey = (ts) => new Date(ts * 1000).toLocaleDateString('vi-VN', { day: 'numeric', month: 'long', year: 'numeric' })
 const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
 
-export default function HistoryPanel({ items, current, playing, onPlay, onChanged }) {
+export default function HistoryPanel({ items, current, playing, onPlay, onChanged, onRestore }) {
   const confirm = useConfirm()
   if (!items.length) return <p className="py-16 text-center text-sm text-slate-400">Chưa có bản ghi nào.</p>
 
@@ -28,10 +28,11 @@ export default function HistoryPanel({ items, current, playing, onPlay, onChange
                 <button onClick={() => onPlay(it)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-slate-100 dark:bg-slate-800">
                   {active && playing ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
                 </button>
-                <div className="min-w-0 flex-1">
+                <button type="button" onClick={() => onRestore?.(it)} disabled={!onRestore || !it.text} title="Bấm để khôi phục văn bản này vào ô nhập"
+                  className="min-w-0 flex-1 cursor-pointer rounded text-left disabled:cursor-default">
                   <div className="truncate text-[13px]">{it.text}</div>
                   <div className="truncate text-[11px] uppercase text-slate-400">{it.voice_name} · {hhmm(it.timestamp)}</div>
-                </div>
+                </button>
                 <div className="hidden items-center gap-0.5 text-slate-400 group-hover:flex">
                   <button onClick={async () => { await api.deleteHistory(it.id); onChanged() }} className="rounded p-1 hover:text-red-600"><Trash2 size={14} /></button>
                   <a href={it.audio_url} download={`${it.id}.wav`} className="rounded p-1 hover:text-slate-700"><Download size={14} /></a>

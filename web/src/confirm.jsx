@@ -3,6 +3,7 @@ import { AlertTriangle } from 'lucide-react'
 
 // Hộp thoại xác nhận tự code, thay cho window.confirm.
 // Dùng: const confirm = useConfirm(); if (await confirm({ title, message, confirmText })) { ... }
+// Tuỳ chọn: detail (khung trích dẫn), icon (component lucide), danger (false = nút trung tính), cancelText
 const Ctx = createContext(async () => false)
 export const useConfirm = () => useContext(Ctx)
 
@@ -30,6 +31,7 @@ export function ConfirmProvider({ children }) {
   }, [req, close])
 
   const danger = req?.danger !== false
+  const Icon = req?.icon || AlertTriangle
 
   return (
     <Ctx.Provider value={confirm}>
@@ -41,11 +43,14 @@ export function ConfirmProvider({ children }) {
             className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl dark:bg-slate-900">
             <div className="flex items-start gap-3">
               <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${danger ? 'bg-red-50 text-red-600 dark:bg-red-500/10' : 'bg-brand-50 text-brand-600 dark:bg-brand-500/10'}`}>
-                <AlertTriangle size={20} />
+                <Icon size={20} />
               </span>
               <div className="min-w-0">
                 <h2 id="confirm-title" className="text-base font-semibold">{req.title}</h2>
                 {req.message && <p className="mt-1.5 text-sm leading-relaxed text-slate-500">{req.message}</p>}
+                {req.detail && (
+                  <div className="mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200">{req.detail}</div>
+                )}
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-2">

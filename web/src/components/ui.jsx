@@ -63,7 +63,7 @@ export const VoiceAvatar = ({ voice, size = 'h-14 w-14', text = 'text-xl' }) => 
 // searchable: thêm ô tìm kiếm (không phân biệt hoa thường và dấu), hỗ trợ ↑ ↓ Enter Esc
 const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 
-export const Select = ({ value, options, onChange, icon: Icon, up = false, searchable = false, searchPlaceholder = 'Tìm kiếm…', className = '', triggerClass = '' }) => {
+export const Select = ({ value, options, onChange, icon: Icon, up = false, searchable = false, searchPlaceholder = 'Tìm kiếm…', placeholder, className = '', triggerClass = '' }) => {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
   const [hi, setHi] = useState(0)
@@ -110,7 +110,7 @@ export const Select = ({ value, options, onChange, icon: Icon, up = false, searc
       <button type="button" onClick={toggle} aria-haspopup="listbox" aria-expanded={open}
         className={`flex w-full items-center gap-2 rounded-xl bg-slate-100 px-3 py-2.5 text-left text-xs text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 ${triggerClass}`}>
         {Icon && <Icon size={14} className="shrink-0 text-slate-400" />}
-        <span className="flex-1 truncate">{current?.trigger ?? current?.label ?? value}</span>
+        <span className="flex-1 truncate">{current?.trigger ?? current?.label ?? placeholder ?? value}</span>
         <ChevronsUpDown size={13} className="shrink-0 text-slate-400" />
       </button>
       {open && (
