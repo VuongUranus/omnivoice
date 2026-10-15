@@ -5,7 +5,9 @@ export default {
   theme: {
     extend: {
       fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-      colors: { brand: { 50: '#eef2ff', 100: '#e0e7ff', 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' } },
+      colors: {
+        brand: { 50: '#f3f0ff', 100: '#e7e1ff', 400: '#a18bff', 500: '#7c5cfc', 600: '#6a49ec', 700: '#5a3bd1' },
+      },
     },
   },
   plugins: [],

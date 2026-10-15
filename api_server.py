@@ -39,6 +39,7 @@ import app_omnivoice as legacy
 logging.basicConfig(level=logging.INFO)
 
 DIST_DIR = os.path.join(legacy.SCRIPT_DIR, "web", "dist")
+PREVIEW_DIR = os.path.join(legacy.HISTORY_DIR, "previews")
 ALLOWED_DIRS = [legacy.PRESETS_DIR, legacy.HISTORY_DIR, legacy.CUSTOM_VOICES_DIR]
 
 app = FastAPI(title="OmniVoice Studio API")
@@ -81,7 +82,12 @@ def _voice_json(key: str, v: dict) -> dict:
 
 
 def _history_json(it: dict) -> dict:
-    return {**{k: v for k, v in it.items() if k != "file_path"}, "audio_url": _audio_url(it["file_path"])}
+    voice = legacy.get_all_voices().get(it.get("voice_choice"), {})
+    return {
+        **{k: v for k, v in it.items() if k != "file_path"},
+        "grad": voice.get("grad", ""),
+        "audio_url": _audio_url(it["file_path"]),
+    }
 
 
 def _voice_prompt(key: str):
@@ -179,6 +185,47 @@ async def create_voice(
     legacy.save_custom_voices(voices)
     STATE["voice_cache"].pop(key, None)
     return _voice_json(key, entry)
+
+
+@app.post("/api/voices/preview")
+def preview_voice(
+    audio: UploadFile = File(...),
+    text: str = Form(...),
+    language: str = Form("Auto"),
+    ref_text: str = Form(""),
+    denoise: bool = Form(False),
+    preprocess_prompt: bool = Form(True),
+):
+    """Nghe thử giọng clone từ file mẫu mà không lưu vào thư viện hay lịch sử."""
+    model = _model()
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "Vui lòng nhập văn bản nghe thử")
+    os.makedirs(PREVIEW_DIR, exist_ok=True)
+    pid = f"preview_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    src = os.path.join(PREVIEW_DIR, f"{pid}_ref.wav")
+    out = os.path.join(PREVIEW_DIR, f"{pid}.wav")
+    with open(src, "wb") as f:
+        shutil.copyfileobj(audio.file, f)
+    try:
+        ref_text = ref_text.strip()
+        if not ref_text:
+            ref_text = model.transcribe(src).strip()
+        prompt = model.create_voice_clone_prompt(ref_audio=src, ref_text=ref_text)
+        cfg = OmniVoiceGenerationConfig(denoise=denoise, preprocess_prompt=preprocess_prompt)
+        wav = model.generate(
+            text=text,
+            language=None if language == "Auto" else language,
+            generation_config=cfg,
+            voice_clone_prompt=prompt,
+        )
+        data = (wav[0] * 32767).astype(np.int16)
+        sf.write(out, data, model.sampling_rate)
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi nghe thử: {type(e).__name__}: {e}")
+    finally:
+        os.remove(src)
+    return {"audio_url": _audio_url(out), "duration": round(len(data) / model.sampling_rate, 1), "ref_text": ref_text}
 
 
 @app.delete("/api/voices")
