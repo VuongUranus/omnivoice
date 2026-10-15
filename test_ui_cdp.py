@@ -123,7 +123,7 @@ async def run_cdp():
             await send("Runtime.evaluate", {
                 "expression": """
                 window.loadBottomPlayer({
-                    file_url: '/gradio_api/file=/Users/vuongdoan/.gemini/antigravity/scratch/omnivoice/presets/elon_musk_7s.wav',
+                    file_url: '/gradio_api/file=/Users/vuongdoan/Documents/omnivoice/presets/elon_musk_7s.wav',
                     voice_name: 'PEAKTV',
                     text: 'Chào mừng các bạn đã quay trở lại. Hôm nay, chúng ta sẽ cùng khám phá câu chuyện phía sau sự thành công của một trong những công nghệ bí ẩn nhất thế giới.',
                     avatar: '🚀',
