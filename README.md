@@ -35,3 +35,15 @@ source .venv/bin/activate
 # Tạo giọng nói từ dòng lệnh
 omnivoice-infer --text "Xin chào thế giới" --output out.wav --device mps
 ```
+
+---
+
+## 4. Giao diện React + Tailwind (mới)
+Phiên bản web hiện đại hơn, dùng chung model, lịch sử và thư viện giọng với bản Gradio:
+
+```bash
+./run_react.sh          # build frontend (lần đầu) + chạy API
+```
+Mở **http://127.0.0.1:8000**.
+
+Chế độ phát triển (hot reload): chạy `python api_server.py --device mps`, rồi `cd web && npm install && npm run dev` và mở http://127.0.0.1:5173.
