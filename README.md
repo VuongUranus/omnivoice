@@ -48,7 +48,7 @@ Mở **http://127.0.0.1:8000**.
 
 Chế độ phát triển (hot reload): chạy `python api_server.py --device mps`, rồi `cd web && npm install && npm run dev` và mở http://127.0.0.1:5173.
 
-Giới hạn độ dài văn bản mỗi lần tạo giọng do server quy định (mặc định 5000 ký tự; bản thân model không giới hạn, văn bản dài được tự tách theo dấu câu). Đổi bằng `python api_server.py --device mps --max-chars 10000`, giao diện tự cập nhật theo.
+Giới hạn độ dài văn bản mỗi lần tạo giọng do server quy định (mặc định 200000 ký tự; bản thân model không giới hạn, văn bản dài được tự tách theo dấu câu). Đổi bằng `python api_server.py --device mps --max-chars 10000`, giao diện tự cập nhật theo.
 
 ### Tạo giọng nói bất đồng bộ (hàng đợi)
 Bấm **Generate** là yêu cầu được xếp vào hàng đợi và trả về ngay; một worker duy nhất chạy model lần lượt từng yêu cầu. Bạn có thể gửi thêm đoạn khác, đổi trang hoặc tải lại trang trong lúc chờ: tiến trình hiện ở đầu panel phải của trang Text to Speech và ở thẻ trên header, kết quả tự vào History kèm thông báo.
@@ -58,4 +58,3 @@ Bấm **Generate** là yêu cầu được xếp vào hàng đợi và trả v�
 - Số yêu cầu chờ tối đa mặc định là 20, đổi bằng `python api_server.py --max-queue 50`.
 - Nghe thử giọng clone và nhận diện chữ dùng chung model nên phải chờ tới lượt khi hàng đợi đang bận (tối đa 300 giây).
 - API: `POST /api/jobs`, `GET /api/jobs`, `GET|DELETE /api/jobs/{id}`, `POST /api/jobs/{id}/retry`. `POST /api/generate` vẫn dùng được (đồng bộ, đi qua cùng hàng đợi).
-

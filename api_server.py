@@ -86,7 +86,7 @@ LANGUAGES = set(legacy._ALL_LANGUAGES)
 # Giới hạn độ dài văn bản cho Text to Speech. Bản thân model KHÔNG giới hạn (văn bản dài được tự tách theo
 # dấu câu thành các đoạn ~15s, xem docs/generation-parameters.md của OmniVoice); đây là chốt chặn để một
 # request không chạy quá lâu. Đổi bằng: python api_server.py --max-chars 10000
-TTS_LIMITS = {"max_chars": 5000}
+TTS_LIMITS = {"max_chars": 200000}
 
 # Giới hạn khi thêm/sửa thông tin giọng (Voice Library)
 DEFAULT_GRAD = "linear-gradient(135deg,#ec4899,#8b5cf6)"
