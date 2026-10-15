@@ -1,3 +1,4 @@
+import { usePersisted } from '../usePersisted'
 import { useRef, useState } from 'react'
 import { ArrowLeftRight, Eraser, Globe, Loader2, RotateCcw, Sparkles, Upload, Wand2 } from 'lucide-react'
 import { api } from '../api'
@@ -8,12 +9,12 @@ const MAX = 5000
 const DEFAULTS = { speed: 1, cfg: 2, steps: 32, denoise: true, pre: true, post: true }
 
 export default function TextToSpeech({ voice, languages, ready, onGenerated, onOpenVoices, history, onHistoryChanged, current, playing, onPlay }) {
-  const [tab, setTab] = useState('settings')
+  const [tab, setTab] = usePersisted('ov.tts.tab', 'settings')
   const [text, setText] = useState('')
-  const [instruct, setInstruct] = useState('')
-  const [showInstruct, setShowInstruct] = useState(false)
-  const [language, setLanguage] = useState('Auto')
-  const [s, setS] = useState(DEFAULTS)
+  const [instruct, setInstruct] = usePersisted('ov.tts.instruct', '')
+  const [showInstruct, setShowInstruct] = usePersisted('ov.tts.showInstruct', false)
+  const [language, setLanguage] = usePersisted('ov.tts.language', 'Auto')
+  const [s, setS] = usePersisted('ov.tts.settings', DEFAULTS)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const fileRef = useRef(null)

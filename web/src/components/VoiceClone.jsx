@@ -1,3 +1,4 @@
+import { usePersisted } from '../usePersisted'
 import { useEffect, useRef, useState } from 'react'
 import { Info, Inbox, Loader2, Mic, Save, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
 import { api } from '../api'
@@ -12,10 +13,10 @@ export default function VoiceClone({ languages, onSaved, ready }) {
   const [drag, setDrag] = useState(false)
   const [recording, setRecording] = useState(false)
   const [secs, setSecs] = useState(0)
-  const [denoise, setDenoise] = useState(false)
-  const [pre, setPre] = useState(true)
-  const [language, setLanguage] = useState('Auto')
-  const [text, setText] = useState(SAMPLE)
+  const [denoise, setDenoise] = usePersisted('ov.clone.denoise', false)
+  const [pre, setPre] = usePersisted('ov.clone.pre', true)
+  const [language, setLanguage] = usePersisted('ov.clone.language', 'Auto')
+  const [text, setText] = usePersisted('ov.clone.text', SAMPLE)
   const [refText, setRefText] = useState('')
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState('🎙️')

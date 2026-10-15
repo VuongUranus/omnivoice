@@ -1,3 +1,4 @@
+import { usePersisted } from './usePersisted'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AudioLines, Cpu, Library, Moon, Sun, Copy } from 'lucide-react'
 import { api } from './api'
@@ -14,13 +15,13 @@ const NAV = [
 ]
 
 export default function App() {
-  const [page, setPage] = useState('tts')
+  const [page, setPage] = usePersisted('ov.page', 'tts')
   const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
   const [voices, setVoices] = useState([])
   const [history, setHistory] = useState([])
   const [languages, setLanguages] = useState(['Auto'])
   const [health, setHealth] = useState({ ready: false, device: '' })
-  const [selectedVoice, setSelectedVoice] = useState(null)
+  const [selectedVoice, setSelectedVoice] = usePersisted('ov.voice', null)
   const [modalOpen, setModalOpen] = useState(false)
 
   // Trạng thái phát nhạc dùng chung cho Player và danh sách lịch sử
