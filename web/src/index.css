@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { @apply bg-white text-[13px] text-slate-800 antialiased dark:bg-slate-950 dark:text-slate-100; }
+input[type='range'] { @apply accent-slate-900 dark:accent-slate-100; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { @apply rounded-full bg-slate-200 dark:bg-slate-800; }
