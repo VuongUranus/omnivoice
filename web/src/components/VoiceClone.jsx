@@ -150,7 +150,7 @@ export default function VoiceClone({ languages, onSaved, ready }) {
 
       <h2 className={`${h} mt-6`}>Text to Preview</h2>
       <div className="rounded-xl border border-slate-200 dark:border-slate-800">
-        <Select value={language} onChange={setLanguage} options={langOptions(languages)} triggerClass="rounded-b-none rounded-t-xl bg-transparent px-3 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-900" />
+        <Select value={language} onChange={setLanguage} options={langOptions(languages)} searchable searchPlaceholder="Tìm ngôn ngữ…" triggerClass="rounded-b-none rounded-t-xl bg-transparent px-3 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-900" />
         <textarea value={text} maxLength={MAX_PREVIEW} onChange={(e) => setText(e.target.value)} rows={4}
           className="w-full resize-none rounded-b-xl bg-transparent p-3 text-sm outline-none" />
         <div className="px-3 pb-2 text-xs text-slate-400">{text.length} / {MAX_PREVIEW} characters</div>

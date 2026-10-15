@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronsUpDown } from 'lucide-react'
+import { Check, ChevronsUpDown, Search } from 'lucide-react'
 
 export const fmtDur = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
@@ -60,15 +60,32 @@ export const VoiceAvatar = ({ voice, size = 'h-14 w-14', text = 'text-xl' }) => 
 
 // Dropdown tùy chỉnh thay cho <select> của hệ thống
 // options: [{ value, label, trigger? }] — trigger là nhãn hiển thị trên nút (mặc định là label)
-export const Select = ({ value, options, onChange, icon: Icon, up = false, className = '', triggerClass = '' }) => {
+// searchable: thêm ô tìm kiếm (không phân biệt hoa thường và dấu), hỗ trợ ↑ ↓ Enter Esc
+const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
+export const Select = ({ value, options, onChange, icon: Icon, up = false, searchable = false, searchPlaceholder = 'Tìm kiếm…', className = '', triggerClass = '' }) => {
   const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [hi, setHi] = useState(0)
   const ref = useRef(null)
+  const listRef = useRef(null)
   const current = options.find((o) => o.value === value)
+
+  const needle = norm(q.trim())
+  const shown = needle ? options.filter((o) => norm(`${o.label} ${o.trigger ?? ''}`).includes(needle)) : options
+
+  const close = () => { setOpen(false); setQ('') }
+  const pick = (o) => { onChange(o.value); close() }
+  const toggle = () => {
+    if (open) return close()
+    setHi(Math.max(0, options.findIndex((o) => o.value === value)))
+    setOpen(true)
+  }
 
   useEffect(() => {
     if (!open) return
-    const onDown = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    const onDown = (e) => { if (!ref.current?.contains(e.target)) close() }
+    const onKey = (e) => { if (e.key === 'Escape') close() }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
     return () => {
@@ -77,31 +94,52 @@ export const Select = ({ value, options, onChange, icon: Icon, up = false, class
     }
   }, [open])
 
+  // Giữ mục đang được tô sáng trong vùng nhìn thấy
+  useEffect(() => {
+    if (open) listRef.current?.querySelector('[data-hi="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [open, hi, q])
+
+  const onSearchKey = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, shown.length - 1)) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)) }
+    else if (e.key === 'Enter') { e.preventDefault(); if (shown[hi]) pick(shown[hi]) }
+  }
+
   return (
     <div ref={ref} className={`relative ${className}`}>
-      <button type="button" onClick={() => setOpen(!open)} aria-haspopup="listbox" aria-expanded={open}
+      <button type="button" onClick={toggle} aria-haspopup="listbox" aria-expanded={open}
         className={`flex w-full items-center gap-2 rounded-xl bg-slate-100 px-3 py-2.5 text-left text-xs text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 ${triggerClass}`}>
         {Icon && <Icon size={14} className="shrink-0 text-slate-400" />}
         <span className="flex-1 truncate">{current?.trigger ?? current?.label ?? value}</span>
         <ChevronsUpDown size={13} className="shrink-0 text-slate-400" />
       </button>
       {open && (
-        <ul role="listbox"
-          className={`absolute left-0 z-30 max-h-72 w-full min-w-[220px] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-800 dark:bg-slate-900 ${up ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
-          {options.map((o) => {
-            const active = o.value === value
-            return (
-              <li key={o.value} role="option" aria-selected={active}>
-                <button type="button" onClick={() => { onChange(o.value); setOpen(false) }}
-                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition ${
-                    active ? 'bg-slate-100 font-medium dark:bg-slate-800' : 'hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
-                  {o.label}
-                  {active && <Check size={14} className="text-brand-500" />}
-                </button>
-              </li>
-            )
-          })}
-        </ul>
+        <div className={`absolute left-0 z-30 w-full min-w-[240px] rounded-2xl border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-800 dark:bg-slate-900 ${up ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
+          {searchable && (
+            <div className="relative mb-1">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setHi(0) }} onKeyDown={onSearchKey}
+                placeholder={searchPlaceholder}
+                className="w-full rounded-xl bg-slate-50 py-2.5 pl-9 pr-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 dark:bg-slate-800 dark:text-slate-100" />
+            </div>
+          )}
+          <ul ref={listRef} role="listbox" className="max-h-64 overflow-y-auto">
+            {shown.length === 0 && <li className="px-3 py-6 text-center text-sm text-slate-400">Không tìm thấy kết quả</li>}
+            {shown.map((o, i) => {
+              const active = o.value === value
+              return (
+                <li key={o.value} role="option" aria-selected={active}>
+                  <button type="button" data-hi={i === hi} onClick={() => pick(o)} onMouseEnter={() => setHi(i)}
+                    className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm text-slate-800 transition dark:text-slate-100 ${
+                      i === hi ? 'bg-slate-100 dark:bg-slate-800' : ''} ${active ? 'font-medium' : ''}`}>
+                    {o.label}
+                    {active && <Check size={14} className="text-brand-500" />}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
       )}
     </div>
   )
