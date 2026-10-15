@@ -132,7 +132,7 @@ export default function App() {
                 onOpenVoices={() => setModalOpen(true)} history={history} onHistoryChanged={refreshHistory}
                 current={current} playing={playing} onPlay={play} voiceOf={voiceOf} />
             )}
-            {page === 'library' && <VoiceLibrary voices={voices} onUse={useVoice} onChanged={refreshVoices} />}
+            {page === 'library' && <VoiceLibrary voices={voices} limits={limits} onUse={useVoice} onChanged={refreshVoices} />}
             {page === 'clone' && <VoiceClone languages={languages} limits={limits} onSaved={refreshVoices} ready={health.ready} />}
           </div>
           <Player item={current} voice={voiceOf(current)} audioRef={audioRef} playing={playing} pos={pos} />

@@ -69,7 +69,7 @@ export default function TextToSpeech({ voice, languages, ready, onGenerated, onO
               {busy ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} {busy ? 'Đang tạo…' : 'Generate'}
             </Button>
           </div>
-          {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+          {error && <p className="mt-3 whitespace-pre-line rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
         </div>
 
         {/* Panel phải */}

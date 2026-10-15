@@ -2,16 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Info, Inbox, Loader2, Mic, Save, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
 import { api } from '../api'
 import { blobToWavFile } from '../wav'
+import { clip, extLabel, mb, precheckFile, useAudioInspect } from '../audioCheck'
 import { usePersisted } from '../usePersisted'
 import { Button, Select, Toggle, inputCls, langOptions } from './ui'
 
 const SAMPLE = 'Xin chào, rất vui được hỗ trợ bạn. Hãy chọn một giọng nói phù hợp và cùng bắt đầu hành trình sáng tạo âm thanh nhé.'
-const IDLE = { status: 'idle', duration: null, errors: [], warnings: [] }
-
-const clip = (s, n) => Array.from(s).slice(0, n).join('')
-const mb = (bytes) => (bytes / 1024 / 1024).toFixed(1)
-const extLabel = (exts) => exts.map((e) => e.replace('.', '').toUpperCase()).join(', ')
-const extOf = (name) => (name.match(/\.[^.]+$/)?.[0] || '').toLowerCase()
 
 // Mọi giới hạn (dung lượng, độ dài, số ký tự, định dạng) lấy từ `limits` do server trả về
 // qua /api/meta, nên giao diện luôn trùng với những gì server thực sự kiểm tra.
@@ -24,7 +19,6 @@ function CloneForm({ languages, limits, onSaved, ready }) {
   const [lo, hi] = limits.ref_recommended_seconds
   const [file, setFile] = useState(null)
   const [fileUrl, setFileUrl] = useState('')
-  const [info, setInfo] = useState(IDLE)
   const [drag, setDrag] = useState(false)
   const [recording, setRecording] = useState(false)
   const [secs, setSecs] = useState(0)
@@ -42,6 +36,7 @@ function CloneForm({ languages, limits, onSaved, ready }) {
   const [result, setResult] = useState(null)
   const recRef = useRef(null)
   const inputRef = useRef(null)
+  const info = useAudioInspect(file)
 
   const lang = languages.includes(language) ? language : 'Auto'
   const previewText = clip(text, limits.preview_max_chars)
@@ -50,18 +45,6 @@ function CloneForm({ languages, limits, onSaved, ready }) {
     if (!file) { setFileUrl(''); return }
     const u = URL.createObjectURL(file); setFileUrl(u)
     return () => URL.revokeObjectURL(u)
-  }, [file])
-
-  // Hỏi server kiểm tra audio mẫu ngay khi chọn file (độ dài, định dạng, dung lượng)
-  useEffect(() => {
-    if (!file) { setInfo(IDLE); return }
-    let stale = false
-    setInfo({ ...IDLE, status: 'checking' })
-    const f = new FormData(); f.append('audio', file)
-    api.inspectAudio(f)
-      .then((r) => !stale && setInfo({ status: 'done', ...r }))
-      .catch((e) => !stale && setInfo({ ...IDLE, status: 'done', errors: [e.message] }))
-    return () => { stale = true }
   }, [file])
 
   useEffect(() => {
@@ -78,13 +61,8 @@ function CloneForm({ languages, limits, onSaved, ready }) {
 
   const pick = (f) => {
     if (!f) return
-    const ext = extOf(f.name)
-    if (!limits.extensions.includes(ext)) {
-      return setMsg({ ok: false, text: `Định dạng '${ext || 'không rõ'}' không được hỗ trợ. Chỉ nhận: ${extLabel(limits.extensions)}.` })
-    }
-    if (f.size > limits.max_upload_mb * 1024 * 1024) {
-      return setMsg({ ok: false, text: `File ${mb(f.size)}MB vượt quá giới hạn ${limits.max_upload_mb}MB.` })
-    }
+    const problem = precheckFile(f, limits)
+    if (problem) return setMsg({ ok: false, text: problem })
     setMsg(null); setResult(null); setFile(f)
   }
 

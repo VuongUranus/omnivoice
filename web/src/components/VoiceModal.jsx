@@ -1,22 +1,31 @@
-import { useConfirm } from '../confirm'
-import { useRef, useState } from 'react'
-import { Pause, Play, Search, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Pause, Pencil, Play, RotateCcw, Search, Trash2, X } from 'lucide-react'
 import { api } from '../api'
+import { useConfirm } from '../confirm'
 import { Tag, VoiceAvatar } from './ui'
 
 const SUGGESTIONS = ['Tiếng Việt', 'Nam', 'Podcast', 'Documentary']
 
-export function VoiceRow({ voice, selected, onUse, onDelete }) {
+export function VoiceRow({ voice, selected, onUse, onEdit, onDelete, onRestore }) {
   const audio = useRef(null)
   const [on, setOn] = useState(false)
   const tags = voice.tags || []
   const toggle = () => (audio.current.paused ? audio.current.play() : audio.current.pause())
+  const icon = 'rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800'
 
   return (
     <div className={`flex items-center gap-4 rounded-2xl p-2.5 transition hover:bg-slate-50 dark:hover:bg-slate-900 ${selected ? 'bg-brand-50/60 dark:bg-brand-500/10' : ''}`}>
       <VoiceAvatar voice={voice} size="h-14 w-14" text="text-2xl" />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-semibold">{voice.name} - {voice.style_tag}</div>
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-semibold">{voice.name} - {voice.style_tag}</span>
+          {voice.modified && <span className="shrink-0 rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-medium text-brand-600 dark:bg-brand-500/15">Đã sửa</span>}
+          {voice.instruct_error && (
+            <span title={voice.instruct_error} className="flex shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10">
+              <AlertTriangle size={11} /> Instruct không hợp lệ
+            </span>
+          )}
+        </div>
         <div className="mt-1 truncate text-xs text-slate-500">{voice.desc}</div>
       </div>
       <div className="hidden items-center gap-1.5 sm:flex">
@@ -31,37 +40,53 @@ export function VoiceRow({ voice, selected, onUse, onDelete }) {
           </button>
         </>
       )}
-      <button onClick={() => onUse(voice.key)} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900">Use</button>
-      {onDelete && voice.custom && (
-        <button onClick={() => onDelete(voice)} title="Xoá giọng" className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10"><Trash2 size={16} /></button>
+      {onRestore ? (
+        <button onClick={() => onRestore(voice)} className="flex items-center gap-1.5 rounded-full border border-brand-500 px-4 py-2 text-sm font-semibold text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10">
+          <RotateCcw size={14} /> Khôi phục
+        </button>
+      ) : (
+        <>
+          <button onClick={() => onUse(voice.key)} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900">Use</button>
+          {onEdit && <button onClick={() => onEdit(voice)} title="Sửa giọng" className={icon}><Pencil size={16} /></button>}
+          {onDelete && <button onClick={() => onDelete(voice)} title="Xoá giọng" className={`${icon} hover:!bg-red-50 hover:!text-red-600 dark:hover:!bg-red-500/10`}><Trash2 size={16} /></button>}
+        </>
       )}
     </div>
   )
 }
 
-// Lọc + tìm kiếm dùng chung cho modal và trang Voice Library
-export function VoiceBrowser({ voices, selected, onUse, onChanged, scrollClass = '' }) {
+// Danh sách giọng có tìm kiếm, dùng cho hộp thoại chọn giọng và trang Voice Library.
+// manage: bật sửa/xoá mọi giọng (kể cả giọng có sẵn) và tab "Đã xoá"; tắt thì chỉ xoá được giọng tùy chỉnh.
+export function VoiceBrowser({ voices, selected, onUse, onChanged, onEdit, manage = false, scrollClass = '' }) {
   const confirm = useConfirm()
   const [tab, setTab] = useState('library')
   const [q, setQ] = useState('')
+  const [deleted, setDeleted] = useState([])
   const needle = q.trim().toLowerCase()
-  const list = voices
-    .filter((v) => (tab === 'mine' ? v.custom : !v.custom))
-    .filter((v) => !needle || [v.name, v.style_tag, v.desc, ...(v.tags || [])].join(' ').toLowerCase().includes(needle))
+
+  useEffect(() => {
+    if (manage) api.deletedVoices().then(setDeleted).catch(() => setDeleted([]))
+  }, [manage, voices])
+  useEffect(() => { if (tab === 'deleted' && deleted.length === 0) setTab('library') }, [tab, deleted.length])
+
+  const source = tab === 'deleted' ? deleted : voices.filter((v) => (tab === 'mine' ? v.custom : !v.custom))
+  const list = source.filter((v) => !needle || [v.name, v.style_tag, v.desc, ...(v.tags || [])].join(' ').toLowerCase().includes(needle))
 
   const remove = async (v) => {
-    const ok = await confirm({
-      title: 'Xoá giọng?',
-      message: `Giọng "${v.name}" sẽ bị xoá khỏi thư viện. Hành động này không thể hoàn tác.`,
-      confirmText: 'Xoá',
-    })
+    const ok = await confirm(v.preset
+      ? { title: 'Xoá giọng có sẵn?', message: `Giọng "${v.name}" sẽ bị ẩn khỏi thư viện. Bạn có thể khôi phục lại ở tab "Đã xoá".`, confirmText: 'Xoá' }
+      : { title: 'Xoá giọng?', message: `Giọng "${v.name}" sẽ bị xoá khỏi thư viện. Hành động này không thể hoàn tác.`, confirmText: 'Xoá' })
     if (ok) { await api.deleteVoice(v.key); onChanged() }
   }
+  const restore = async (v) => { await api.restoreVoice(v.key); onChanged() }
+
+  const tabs = [['library', 'Library'], ['mine', 'My Voices'], ...(manage && deleted.length ? [['deleted', `Đã xoá (${deleted.length})`]] : [])]
+  const empty = { library: 'Chưa có giọng có sẵn.' + (manage ? ' Hãy khôi phục ở tab "Đã xoá".' : ''), mine: 'Chưa có giọng tuỳ chỉnh. Hãy tạo ở Voice Clone.', deleted: '' }[tab]
 
   return (
     <>
       <div className="mb-4 flex gap-6">
-        {[['library', 'Library'], ['mine', 'My Voices']].map(([id, l]) => (
+        {tabs.map(([id, l]) => (
           <button key={id} onClick={() => setTab(id)}
             className={`-mb-px border-b-2 pb-1.5 text-lg font-semibold ${tab === id ? 'border-slate-900 dark:border-slate-100' : 'border-transparent text-slate-400'}`}>{l}</button>
         ))}
@@ -78,8 +103,13 @@ export function VoiceBrowser({ voices, selected, onUse, onChanged, scrollClass =
         ))}
       </div>
       <div className={`space-y-1 overflow-y-auto ${scrollClass}`}>
-        {list.length === 0 && <p className="py-12 text-center text-sm text-slate-400">{tab === 'mine' ? 'Chưa có giọng tuỳ chỉnh. Hãy tạo ở Voice Clone.' : 'Không tìm thấy giọng phù hợp.'}</p>}
-        {list.map((v) => <VoiceRow key={v.key} voice={v} selected={v.key === selected} onUse={onUse} onDelete={remove} />)}
+        {list.length === 0 && <p className="py-12 text-center text-sm text-slate-400">{needle ? 'Không tìm thấy giọng phù hợp.' : empty}</p>}
+        {list.map((v) => (
+          <VoiceRow key={v.key} voice={v} selected={v.key === selected} onUse={onUse}
+            onRestore={tab === 'deleted' ? restore : undefined}
+            onEdit={manage ? onEdit : undefined}
+            onDelete={manage || v.custom ? remove : undefined} />
+        ))}
       </div>
     </>
   )

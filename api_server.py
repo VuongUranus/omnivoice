@@ -12,10 +12,13 @@ Prod:  cd web && npm run build    (api_server tự phục vụ web/dist)
 """
 
 import argparse
+import json
 import logging
 import os
+import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from typing import Optional
@@ -36,6 +39,11 @@ from omnivoice.utils.common import get_best_device
 from omnivoice.utils.lang_map import LANG_NAMES, lang_display_name
 
 import app_omnivoice as legacy
+
+try:
+    from omnivoice.models.omnivoice import _resolve_instruct  # luật kiểm tra instruct mà model áp dụng khi Generate
+except ImportError:  # bản OmniVoice khác: bỏ qua kiểm tra, để model tự báo lỗi
+    _resolve_instruct = None
 
 logging.basicConfig(level=logging.INFO)
 
@@ -73,6 +81,27 @@ CLONE_LIMITS = {
 PREVIEW_TTL_SECONDS = 3600
 LANGUAGES = set(legacy._ALL_LANGUAGES)
 
+# Giới hạn khi thêm/sửa thông tin giọng (Voice Library)
+DEFAULT_GRAD = "linear-gradient(135deg,#ec4899,#8b5cf6)"
+GRADIENTS = [f"linear-gradient(135deg,{a},{b})" for a, b in (
+    ("#6366f1", "#8b5cf6"), ("#0ea5e9", "#06b6d4"), ("#f59e0b", "#f97316"), ("#ec4899", "#8b5cf6"),
+    ("#10b981", "#14b8a6"), ("#ef4444", "#f97316"), ("#84cc16", "#22c55e"), ("#64748b", "#334155"),
+)]
+CLONE_LIMITS.update({
+    "desc_max_chars": 200,
+    "tags_max_count": 8,
+    "tag_max_chars": 20,
+    "gradients": GRADIENTS,
+    "instruct_validation": _resolve_instruct is not None,
+})
+GRAD_RE = re.compile(r"^linear-gradient\(135deg,\s*#[0-9a-fA-F]{6}\s*,\s*#[0-9a-fA-F]{6}\)$")
+
+# Giọng có sẵn (PRESET_VOICES) nằm trong code nên không sửa trực tiếp: mọi chỉnh sửa/xoá được lưu
+# thành lớp "ghi đè" riêng, file wav gốc trong presets/ không bao giờ bị đụng tới.
+OVERRIDES_FILE = os.path.join(legacy.CUSTOM_VOICES_DIR, "preset_overrides.json")
+EDITABLE_FIELDS = ("name", "avatar", "style_tag", "desc", "tags", "grad", "instruct", "ref_text", "audio")
+VOICE_LOCK = threading.RLock()
+
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -87,7 +116,62 @@ def _audio_url(path: Optional[str]) -> str:
     return f"/api/files?path={path}" if path else ""
 
 
+def _write_json(path: str, obj) -> None:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _load_overrides() -> dict:
+    try:
+        with open(OVERRIDES_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    return {"overrides": dict(data.get("overrides", {})), "deleted": list(data.get("deleted", []))}
+
+
+def _save_overrides(data: dict) -> None:
+    _write_json(OVERRIDES_FILE, data)
+
+
+def _preset_view(key: str, ov: dict) -> Optional[dict]:
+    """Giọng có sẵn sau khi áp dụng chỉnh sửa; None nếu thiếu file audio."""
+    base = legacy.PRESET_VOICES[key]
+    v = {**base, **ov["overrides"].get(key, {})}
+    if not v.get("audio") or not os.path.exists(v["audio"]):
+        v["audio"] = base.get("audio")  # audio thay thế bị mất -> quay về bản gốc
+    return v if v.get("audio") and os.path.exists(v["audio"]) else None
+
+
+def all_voices() -> dict:
+    """Giọng có sẵn (đã áp dụng sửa/xoá) + giọng tùy chỉnh."""
+    ov = _load_overrides()
+    voices = {}
+    for key in legacy.PRESET_VOICES:
+        if key in ov["deleted"]:
+            continue
+        v = _preset_view(key, ov)
+        if v:
+            voices[key] = v
+    voices.update(legacy.load_custom_voices())
+    return voices
+
+
+def _instruct_error(instruct: Optional[str]) -> Optional[str]:
+    """Thông báo lỗi nếu instruct không nằm trong từ vựng của model, ngược lại None."""
+    if not instruct or not instruct.strip() or _resolve_instruct is None:
+        return None
+    try:
+        _resolve_instruct(instruct)
+    except ValueError as e:
+        return str(e)
+    return None
+
+
 def _voice_json(key: str, v: dict) -> dict:
+    preset = key in legacy.PRESET_VOICES
     return {
         "key": key,
         "name": v.get("name"),
@@ -97,18 +181,88 @@ def _voice_json(key: str, v: dict) -> dict:
         "tags": v.get("tags", []),
         "grad": v.get("grad", ""),
         "ref_text": v.get("ref_text", ""),
+        "instruct": v.get("instruct", ""),
+        "instruct_error": _instruct_error(v.get("instruct")),
         "audio_url": _audio_url(v.get("audio")),
-        "custom": key not in legacy.PRESET_VOICES,
+        "custom": not preset,
+        "preset": preset,
+        "modified": preset and key in _load_overrides()["overrides"],
     }
 
 
 def _history_json(it: dict) -> dict:
-    voice = legacy.get_all_voices().get(it.get("voice_choice"), {})
+    voice = all_voices().get(it.get("voice_choice"), {})
     return {
         **{k: v for k, v in it.items() if k != "file_path"},
         "grad": voice.get("grad", ""),
         "audio_url": _audio_url(it["file_path"]),
     }
+
+
+def _parse_tags(raw: str) -> list:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        items = data if isinstance(data, list) else [data]
+    except ValueError:
+        items = raw.split(",")
+    return [str(t).strip() for t in items if str(t).strip()]
+
+
+def _clean_voice_fields(*, name, avatar, style_tag, desc, tags, grad, instruct, exclude_key=None) -> dict:
+    """Chuẩn hóa và kiểm tra thông tin giọng theo CLONE_LIMITS (dùng cho cả thêm lẫn sửa)."""
+    lim = CLONE_LIMITS
+    name, avatar, style_tag = name.strip(), avatar.strip() or "🎙️", style_tag.strip() or "Custom Voice"
+    desc, instruct, grad = desc.strip(), instruct.strip(), grad.strip()
+    if not name:
+        raise HTTPException(400, "Vui lòng nhập tên giọng")
+    for label, value, key in (("Tên giọng", name, "name_max_chars"), ("Phong cách", style_tag, "style_max_chars"),
+                              ("Icon", avatar, "avatar_max_chars"), ("Mô tả", desc, "desc_max_chars")):
+        if len(value) > lim[key]:
+            raise HTTPException(400, f"{label} tối đa {lim[key]} ký tự")
+
+    tag_list = []
+    for t in _parse_tags(tags):
+        if len(t) > lim["tag_max_chars"]:
+            raise HTTPException(400, f"Mỗi tag tối đa {lim['tag_max_chars']} ký tự: '{t[:20]}…'")
+        if t not in tag_list:
+            tag_list.append(t)
+    if len(tag_list) > lim["tags_max_count"]:
+        raise HTTPException(400, f"Tối đa {lim['tags_max_count']} tag")
+
+    if grad and not GRAD_RE.match(grad):
+        raise HTTPException(400, "Màu nền không hợp lệ")
+    err = _instruct_error(instruct)
+    if err:
+        raise HTTPException(400, f"Instruct không hợp lệ:\n{err}")
+
+    for k, v in all_voices().items():
+        if k != exclude_key and (v.get("avatar"), v.get("name"), v.get("style_tag")) == (avatar, name, style_tag):
+            raise HTTPException(409, f"Đã có giọng '{name}' với icon và phong cách này. Hãy đổi tên hoặc phong cách.")
+    return {"name": name, "avatar": avatar, "style_tag": style_tag, "desc": desc, "tags": tag_list,
+            "grad": grad, "instruct": instruct}
+
+
+def _ref_text_or_asr(path: str, ref_text: str) -> str:
+    ref_text = ref_text.strip()
+    if ref_text:
+        return ref_text
+    try:
+        text = _model().transcribe(path).strip()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Không thể nhận diện lời thoại: {e}")
+    if not text:
+        raise HTTPException(422, "Không nhận diện được lời thoại trong audio. Hãy nhập lời thoại thủ công.")
+    return text
+
+
+def _own_audio(path: Optional[str]) -> bool:
+    """Chỉ file nằm trong custom_voices/ mới là của người dùng; file trong presets/ thì không được xoá."""
+    return bool(path) and os.path.realpath(os.path.dirname(path)) == os.path.realpath(legacy.CUSTOM_VOICES_DIR)
 
 
 def _rm(path: str) -> None:
@@ -198,7 +352,7 @@ def _voice_prompt(key: str):
     cache = STATE["voice_cache"]
     if key in cache:
         return cache[key]
-    v = legacy.get_all_voices().get(key)
+    v = all_voices().get(key)
     if not v or not v.get("audio"):
         return None
     prompt = _model().create_voice_clone_prompt(ref_audio=v["audio"], ref_text=v.get("ref_text") or None)
@@ -247,7 +401,7 @@ def files(path: str):
 def list_voices():
     return [
         _voice_json(k, v)
-        for k, v in legacy.get_all_voices().items()
+        for k, v in all_voices().items()
         if v.get("audio")  # bỏ mục "Tùy chỉnh" trống của bản Gradio
     ]
 
@@ -273,51 +427,142 @@ def create_voice(
     avatar: str = Form("🎙️"),
     style_tag: str = Form("Custom Voice"),
     ref_text: str = Form(""),
+    desc: str = Form(""),
+    tags: str = Form(""),
+    grad: str = Form(""),
+    instruct: str = Form(""),
 ):
-    lim = CLONE_LIMITS
-    name, avatar, style_tag = name.strip(), avatar.strip() or "🎙️", style_tag.strip() or "Custom Voice"
-    if not name:
-        raise HTTPException(400, "Vui lòng nhập tên giọng")
-    for label, value, key in (("Tên giọng", name, "name_max_chars"), ("Phong cách", style_tag, "style_max_chars"), ("Icon", avatar, "avatar_max_chars")):
-        if len(value) > lim[key]:
-            raise HTTPException(400, f"{label} tối đa {lim[key]} ký tự")
+    with VOICE_LOCK:
+        fields = _clean_voice_fields(name=name, avatar=avatar, style_tag=style_tag, desc=desc, tags=tags,
+                                     grad=grad, instruct=instruct)
+        ext = _upload_ext(audio)
+        vid = f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        saved = os.path.join(legacy.CUSTOM_VOICES_DIR, f"{vid}{ext}")
+        _save_upload(audio, saved)
+        try:
+            _validate_audio(saved)
+            ref_text = _ref_text_or_asr(saved, ref_text)
+        except Exception:
+            _rm(saved)
+            raise
 
-    key = f"{avatar} {name} - {style_tag}"
-    if key in legacy.get_all_voices():
-        raise HTTPException(409, f"Đã có giọng '{name}' với icon và phong cách này. Hãy đổi tên hoặc phong cách.")
+        # Key là định danh cố định (không đổi khi sửa tên) nên phải duy nhất, kể cả với giọng đã đổi tên/đã xoá
+        key = f"{fields['avatar']} {fields['name']} - {fields['style_tag']}"
+        custom = legacy.load_custom_voices()
+        if key in custom or key in legacy.PRESET_VOICES or key in all_voices():
+            key = f"{key} ({vid})"
+        entry = {
+            "id": vid, "audio": saved, "audio_url": "", "ref_text": ref_text, **fields,
+            "desc": fields["desc"] or f"Giọng nhân bản tùy chỉnh: {ref_text[:60]}...",
+            "tags": fields["tags"] or ["Tùy chỉnh", fields["style_tag"]],
+            "grad": fields["grad"] or DEFAULT_GRAD,
+        }
+        custom[key] = entry
+        legacy.save_custom_voices(custom)
+        STATE["voice_cache"].pop(key, None)
+        return _voice_json(key, entry)
 
-    ext = _upload_ext(audio)
-    vid = f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-    saved = os.path.join(legacy.CUSTOM_VOICES_DIR, f"{vid}{ext}")
-    _save_upload(audio, saved)
-    try:
-        _validate_audio(saved)
+
+@app.put("/api/voices")
+def update_voice(
+    key: str,
+    audio: Optional[UploadFile] = File(None),
+    name: str = Form(...),
+    avatar: str = Form("🎙️"),
+    style_tag: str = Form("Custom Voice"),
+    desc: str = Form(""),
+    tags: str = Form(""),
+    grad: str = Form(""),
+    instruct: str = Form(""),
+    ref_text: str = Form(""),
+):
+    """Sửa giọng (cả giọng có sẵn lẫn giọng tùy chỉnh). `audio` là tùy chọn: có thì thay file mẫu."""
+    with VOICE_LOCK:
+        current = all_voices().get(key)
+        if current is None:
+            raise HTTPException(404, "Không tìm thấy giọng")
+        preset = key in legacy.PRESET_VOICES
+        fields = _clean_voice_fields(name=name, avatar=avatar, style_tag=style_tag, desc=desc, tags=tags,
+                                     grad=grad, instruct=instruct, exclude_key=key)
+        fields["grad"] = fields["grad"] or current.get("grad") or DEFAULT_GRAD
+
+        new_audio = None
         ref_text = ref_text.strip()
-        if not ref_text:
+        if audio is not None and audio.filename:
+            ext = _upload_ext(audio)
+            new_audio = os.path.join(legacy.CUSTOM_VOICES_DIR, f"voice_{int(time.time())}_{uuid.uuid4().hex[:4]}{ext}")
+            _save_upload(audio, new_audio)
             try:
-                ref_text = _model().transcribe(saved).strip()
-            except HTTPException:
+                _validate_audio(new_audio)
+                ref_text = _ref_text_or_asr(new_audio, ref_text)  # audio mới thì lời thoại cũ không còn đúng
+            except Exception:
+                _rm(new_audio)
                 raise
-            except Exception as e:
-                raise HTTPException(500, f"Không thể nhận diện lời thoại: {e}")
-            if not ref_text:
-                raise HTTPException(422, "Không nhận diện được lời thoại trong audio. Hãy nhập lời thoại thủ công.")
-    except Exception:
-        _rm(saved)
-        raise
+        elif not ref_text:
+            ref_text = current.get("ref_text", "")
 
-    entry = {
-        "id": vid, "name": name, "avatar": avatar, "style_tag": style_tag,
-        "audio": saved, "audio_url": "", "ref_text": ref_text,
-        "desc": f"Giọng nhân bản tùy chỉnh: {ref_text[:60]}...",
-        "tags": ["Tùy chỉnh", style_tag], "grad": "linear-gradient(135deg,#ec4899,#8b5cf6)",
-        "instruct": "",
-    }
-    voices = legacy.load_custom_voices()
-    voices[key] = entry
-    legacy.save_custom_voices(voices)
-    STATE["voice_cache"].pop(key, None)
-    return _voice_json(key, entry)
+        desired = {**current, **fields, "ref_text": ref_text}
+        old_audio = current.get("audio")
+        if new_audio:
+            desired["audio"] = new_audio
+
+        if preset:
+            data = _load_overrides()
+            base = legacy.PRESET_VOICES[key]
+            diff = {f: desired.get(f) for f in EDITABLE_FIELDS if desired.get(f) != base.get(f)}
+            if diff:
+                data["overrides"][key] = diff
+            else:
+                data["overrides"].pop(key, None)
+            _save_overrides(data)
+        else:
+            custom = legacy.load_custom_voices()
+            custom[key].update({f: desired[f] for f in EDITABLE_FIELDS if f in desired})
+            legacy.save_custom_voices(custom)
+
+        if new_audio and _own_audio(old_audio):
+            _rm(old_audio)  # chỉ xoá file mẫu cũ do người dùng tải lên, không bao giờ xoá file trong presets/
+        STATE["voice_cache"].pop(key, None)
+        return _voice_json(key, all_voices()[key])
+
+
+@app.get("/api/voices/deleted")
+def list_deleted_voices():
+    ov = _load_overrides()
+    out = []
+    for key in ov["deleted"]:
+        if key in legacy.PRESET_VOICES:
+            v = _preset_view(key, ov)
+            if v:
+                out.append(_voice_json(key, v))
+    return out
+
+
+@app.post("/api/voices/restore")
+def restore_voice(key: str):
+    with VOICE_LOCK:
+        data = _load_overrides()
+        if key not in data["deleted"]:
+            raise HTTPException(404, "Giọng này không nằm trong danh sách đã xoá")
+        data["deleted"].remove(key)
+        _save_overrides(data)
+        return _voice_json(key, all_voices()[key])
+
+
+@app.post("/api/voices/reset")
+def reset_voice(key: str):
+    """Bỏ mọi chỉnh sửa của một giọng có sẵn, trả về bản mặc định."""
+    if key not in legacy.PRESET_VOICES:
+        raise HTTPException(404, "Chỉ giọng có sẵn mới có bản mặc định")
+    with VOICE_LOCK:
+        data = _load_overrides()
+        old = data["overrides"].pop(key, None)
+        _save_overrides(data)
+        if old and _own_audio(old.get("audio")):
+            _rm(old["audio"])
+        STATE["voice_cache"].pop(key, None)
+        v = all_voices().get(key)
+        return _voice_json(key, v) if v else {"ok": True}
 
 
 @app.post("/api/voices/preview")
@@ -373,17 +618,22 @@ def preview_voice(
 
 @app.delete("/api/voices")
 def delete_voice(key: str):
-    voices = legacy.load_custom_voices()
-    entry = voices.pop(key, None)
-    if entry is None:
-        raise HTTPException(404, "Không tìm thấy giọng tùy chỉnh")
-    legacy.save_custom_voices(voices)
-    STATE["voice_cache"].pop(key, None)
-    try:
-        os.remove(entry["audio"])
-    except OSError:
-        pass
-    return {"ok": True}
+    with VOICE_LOCK:
+        STATE["voice_cache"].pop(key, None)
+        if key in legacy.PRESET_VOICES:
+            # Giọng có sẵn chỉ bị ẩn (file wav trong presets/ giữ nguyên) và có thể khôi phục
+            data = _load_overrides()
+            if key not in data["deleted"]:
+                data["deleted"].append(key)
+                _save_overrides(data)
+            return {"ok": True}
+        voices = legacy.load_custom_voices()
+        entry = voices.pop(key, None)
+        if entry is None:
+            raise HTTPException(404, "Không tìm thấy giọng")
+        legacy.save_custom_voices(voices)
+        _rm(entry["audio"])
+        return {"ok": True}
 
 
 @app.post("/api/transcribe")
@@ -411,9 +661,16 @@ def generate(req: GenerateRequest):
     text = req.text.strip()
     if not text:
         raise HTTPException(400, "Vui lòng nhập văn bản")
-    voices = legacy.get_all_voices()
+    voices = all_voices()
     if req.voice not in voices:
         raise HTTPException(404, "Giọng không tồn tại")
+
+    # Kiểm tra instruct trước khi tốn thời gian tạo prompt giọng
+    instruct = req.instruct.strip() or voices[req.voice].get("instruct")
+    err = _instruct_error(instruct)
+    if err:
+        hint = "" if req.instruct.strip() else " Vào Voice Library → Sửa giọng này để chỉnh lại instruct."
+        raise HTTPException(400, f"Instruct không hợp lệ.{hint}\n{err}")
 
     cfg = OmniVoiceGenerationConfig(
         num_step=req.num_step, guidance_scale=req.guidance_scale, denoise=req.denoise,
@@ -427,7 +684,6 @@ def generate(req: GenerateRequest):
     }
     if req.speed != 1.0:
         kw["speed"] = req.speed
-    instruct = req.instruct.strip() or voices[req.voice].get("instruct")
     if instruct:
         kw["instruct"] = instruct
 
